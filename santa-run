@@ -6,9 +6,13 @@
 # containing dir as $1; our dependency is at $1/sigma-rust. Wire our fixed Cargo
 # path-dep (../sigma-rust) to that checkout, then build + emit. Using $1 (not a
 # shared ../sigma-rust) is what lets two runner dirs pin different refs.
+#
+# This is the *eni* runner: sigma-rust here carries the JIT-cost + lazy-constants
+# work, so we build with `--features jit-cost` to read real costs. (The develop
+# runner omits the flag — upstream has no cost model, so it emits values only.)
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 impl="$(cd "$1" && pwd)"
 ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
-cargo build --release --manifest-path "$here/Cargo.toml" >/dev/null
+cargo build --release --features jit-cost --manifest-path "$here/Cargo.toml" >/dev/null
 "$here/target/release/blitzen" emit "$2" "$3"
