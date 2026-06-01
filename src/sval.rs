@@ -18,7 +18,12 @@ use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_ir::types::stype::SType;
 use serde_json::{json, Value as J};
 
+/// A bridge failure. The payload strings are diagnostic context, read only via
+/// `Debug` (e.g. a test `.expect`); they are intentionally NOT surfaced in the
+/// contract actuals (§7 defers the error-reason taxonomy), so the dead-code lint
+/// reads the fields as unused in a non-test build.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum BridgeError {
     /// The runner has the type but cannot encode/represent this value (contract `unrepresentable`).
     Unrepresentable(String),
@@ -35,7 +40,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, BridgeError> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(BridgeError::Decode(format!("odd-length hex: {}", s)));
     }
     (0..s.len())

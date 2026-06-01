@@ -26,12 +26,16 @@ use ergotree_ir::mir::value::Value;
 use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_interpreter::eval::test_util::try_eval_out;
 
-use crate::sval::{self, BridgeError};
+use crate::sval;
 
 /// One entry's outcome, per the runner contract §3.
 pub enum Outcome {
     Success { value: serde_json::Value, cost: u64 },
     Errored,
+    /// Contract outcome (§3) for an op/method/type the runner doesn't implement.
+    /// Not yet emitted — sigma-rust eval reports unimplemented ops as generic
+    /// errors not yet distinguished from a genuine `errored`. TODO: map them.
+    #[allow(dead_code)]
     NotImplemented,
     Unrepresentable,
 }
@@ -186,10 +190,7 @@ pub fn run_entry(
     let input_constant = match input {
         Some(j) => match sval::decode_constant(j) {
             Ok(c) => Some(c),
-            Err(e) => {
-                eprintln!("DECODE_ERR: {:?}", e);
-                return Outcome::Unrepresentable;
-            }
+            Err(_) => return Outcome::Unrepresentable,
         },
         None => None,
     };
@@ -199,24 +200,15 @@ pub fn run_entry(
     let lenient = lenient_tree_bytes(tree_bytes);
     let tree = match ErgoTree::sigma_parse_bytes(&lenient) {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("PARSE_ERR: {:?}", e);
-            return Outcome::Errored;
-        }
+        Err(_) => return Outcome::Errored,
     };
     let root = match tree.root_expr() {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("ROOT_ERR: {:?}", e);
-            return Outcome::Errored;
-        }
+        Err(_) => return Outcome::Errored,
     };
     let constants = match tree.constants() {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("CONST_ERR: {:?}", e);
-            return Outcome::Errored;
-        }
+        Err(_) => return Outcome::Errored,
     };
 
     let ctx = build_context(input_constant, tree_version, activated_version);
@@ -230,9 +222,6 @@ pub fn run_entry(
                 Err(_) => Outcome::Unrepresentable,
             }
         }
-        Err(e) => {
-            eprintln!("EVAL_ERR: {:?}", e);
-            Outcome::Errored
-        }
+        Err(_) => Outcome::Errored,
     }
 }
