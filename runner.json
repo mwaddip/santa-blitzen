@@ -1,0 +1,6 @@
+{
+  "name": "blitzen-develop",
+  "label": "blitzen (sigma-rust @ develop)",
+  "scope": ["v5", "v6"],
+  "impl": "https://github.com/ergoplatform/sigma-rust.git#develop"
+}
