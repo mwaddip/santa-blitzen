@@ -11,15 +11,16 @@ Reindeer naming: Rudolph = the JVM reference, Dasher = ergots, **Blitzen = sigma
 
 ## Layout
 
-A standalone cargo crate with its own git repo, `path`-depending on a sibling
-sigma-rust checkout:
+Blitzen `path`-depends on the sigma-rust crates as a sibling checkout: from this repo,
+`../sigma-rust` is the sigma-rust **repo root** (the directory containing `ergotree-ir/`,
+`ergotree-interpreter/`, `ergo-chain-types/`). Cargo resolves `path` deps relative to the
+manifest, not the CWD, so the build runs from any working directory once that sibling is
+in place.
 
-```
-~/projects/
-  blitzen/            ← this repo
-  sigma-rust/sigma-rust/   ← path dep (ergotree-ir, ergotree-interpreter, ergo-chain-types)
-  santa/              ← the vectors + the frozen contract
-```
+- **SANTA / CI** — SANTA owns the checkout: it clones `impl` (`<url>#<ref>`) into a
+  per-instance cache and passes `<impl-path>`; `santa-run` wires `../sigma-rust` to
+  `<impl-path>/sigma-rust`, then builds + emits (runner-integration contract §2-3).
+- **Local dev** — put a sigma-rust checkout at `../sigma-rust` (a sibling clone).
 
 `Cargo.lock` is committed and pins the yanked `core2 0.4.0` (sigma-rust's lock is
 gitignored upstream — see the `core2_yank_local_lock` note). The
@@ -32,7 +33,9 @@ uses its random generators — it builds a deterministic `Context` by hand.
 ```bash
 cargo build
 # self-compare: run every entry, compare vs the blessed `expected`, print nice/coal
-cargo run -- ~/projects/santa/vectors/eval/v5
+cargo run -- ../santa/vectors/eval/v5
+# emit: write actuals (no comparison) for the SANTA orchestrator, one file per vector
+cargo run -- emit ../santa/vectors/eval/v5 /tmp/blitzen-actuals
 cargo test            # SValue ⇄ JSON round-trip tests
 ```
 
@@ -51,6 +54,24 @@ lands.
   via `try_eval_out`, capturing the raw JIT cost from `ctx.jit_cost_value()`.
 - **`main.rs`** — the CLI + corpus driver. `run_entry` is **blind** (it never reads
   `expected`); the comparison is a separate structural-equality step (contract §5–6).
+
+## SANTA orchestrator integration
+
+The orchestrator runs every runner through a uniform entrypoint, then applies one
+shared comparator over all runners' actuals — so "equal" is pinned identically across
+runners (runner-contract §6). Blitzen therefore only **emits** actuals on this path; it
+never self-judges.
+
+- **`santa-run <impl-path> <vectors-dir> <out-dir>`** — builds against the sigma-rust
+  SANTA checked out at `<impl-path>/sigma-rust` (wiring it to our `../sigma-rust`
+  path-dep), then runs `blitzen emit`. Exit 0 = actuals written; non-zero = the runner
+  itself failed.
+- **`runner.json`** — declares `name`/`label`, the `scope` of vector dirs claimed
+  (`v5`, `v6`), and `impl` = `<url>#<ref>` (the sigma-rust to test).
+
+SANTA owns the `impl` checkout (clones `<url>` per-instance, checks out `<ref>`), so two
+runner dirs — e.g. `blitzen-develop` and `blitzen-eni` — pin different refs and compare
+the same implementation's branches side by side without colliding.
 
 ## Current state (v5): 1670 / 1705 nice
 

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# santa-run <impl-path> <vectors-dir> <out-dir>  — emit actuals for the orchestrator.
+#
+# SANTA owns the impl checkout (runner-integration contract §2-3): it clones
+# runner.json's `impl` (<url>#<ref>) into a per-instance cache and passes the
+# containing dir as $1; our dependency is at $1/sigma-rust. Wire our fixed Cargo
+# path-dep (../sigma-rust) to that checkout, then build + emit. Using $1 (not a
+# shared ../sigma-rust) is what lets two runner dirs pin different refs.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+impl="$(cd "$1" && pwd)"
+ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
+cargo build --release --manifest-path "$here/Cargo.toml" >/dev/null
+"$here/target/release/blitzen" emit "$2" "$3"
