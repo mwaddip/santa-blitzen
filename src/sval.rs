@@ -125,10 +125,9 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             json!({"kind": "GroupElement", "bytes_hex": ser_bytes(&**ge, "GroupElement")?})
         }
         Value::SigmaProp(sp) => {
-            let bytes = sp
-                .prop_bytes()
-                .map_err(|e| BridgeError::Unrepresentable(format!("SigmaProp bytes: {:?}", e)))?;
-            json!({"kind": "SigmaProp", "raw_hex": hex_lower(&bytes)})
+            // Canonical encoding (contract §4) is the bare serialized `SigmaBoolean`,
+            // NOT `prop_bytes()` — which wraps it in an ErgoTree (spurious `0008` header).
+            json!({"kind": "SigmaProp", "raw_hex": ser_bytes(sp.value(), "SigmaProp")?})
         }
         Value::CBox(b) => json!({"kind": "Box", "bytes_hex": ser_bytes(&**b, "Box")?}),
         Value::Header(_) => {
@@ -285,6 +284,16 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
                 Literal::Opt(Some(Box::new(inner.v))),
             )
         }
+        "SigmaProp" => {
+            use ergotree_ir::sigma_protocol::sigma_boolean::{SigmaBoolean, SigmaProp};
+            // Mirror of `encode_value`: `raw_hex` is the bare serialized `SigmaBoolean`.
+            let sb = SigmaBoolean::sigma_parse_bytes(&hex_field("raw_hex")?)
+                .map_err(|e| BridgeError::Decode(format!("SigmaProp parse: {:?}", e)))?;
+            lit(
+                SType::SSigmaProp,
+                Literal::SigmaProp(Box::new(SigmaProp::new(sb))),
+            )
+        }
         other => {
             return Err(BridgeError::Decode(format!(
                 "unsupported input SValue kind: {}",
@@ -379,5 +388,19 @@ mod tests {
     #[test]
     fn rt_option_some() {
         roundtrip(json!({"kind": "Option", "value": {"kind": "Int", "value": 2}}));
+    }
+
+    #[test]
+    fn rt_sigmaprop_trivial() {
+        // `d2`/`d3` are the bare serialized SigmaBoolean for sigma false/true (TrivialProp).
+        roundtrip(json!({"kind": "SigmaProp", "raw_hex": "d2"}));
+        roundtrip(json!({"kind": "SigmaProp", "raw_hex": "d3"}));
+    }
+
+    #[test]
+    fn rt_sigmaprop_provedlog() {
+        // A real ProveDlog (bare SigmaBoolean), from the blessed proveDlog_equivalence vector.
+        roundtrip(json!({"kind": "SigmaProp",
+            "raw_hex": "cd02288f0e55610c3355c89ed6c5de43cf20da145b8c54f03a29f481e540d94e9a69"}));
     }
 }
