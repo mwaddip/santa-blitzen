@@ -72,14 +72,3 @@ never self-judges.
 SANTA owns the `impl` checkout (clones `<url>` per-instance, checks out `<ref>`), so two
 runner dirs — e.g. `blitzen-develop` and `blitzen-eni` — pin different refs and compare
 the same implementation's branches side by side without colliding.
-
-## Current state (v5): 1670 / 1705 nice
-
-The remaining 35 coal are **surfaced findings**, not runner bugs:
-
-- **29 unrepresentable** — test boxes whose value (1, 20, …) is below sigma-rust's
-  `BoxValue` minimum, which it rejects at parse. The JVM test context allows sub-min
-  boxes; sigma-rust cannot represent them → emitted as `unrepresentable`.
-- **6 `Coll.updateMany`** — a genuine sigma-rust **JIT-cost undercharge** (1–2 low;
-  the value is byte-exact, the cost scales with size). The one real eval finding;
-  to be verified against Scala `methods.scala` and fixed on the sigma-rust cost path.
