@@ -11,11 +11,20 @@ description = "Blitzen — the sigma-rust eval-tier runner for the SANTA conform
 # clone. Cargo resolves `path` deps relative to this manifest (not the CWD), so the
 # build runs from any working directory.
 ergotree-ir = { path = "../sigma-rust/ergotree-ir" }
-# `arbitrary` feature unlocks `ergotree_interpreter::eval::test_util` (the only public
-# arbitrary-root eval entry); we never use its random `force_any_val` — the runner
-# builds a deterministic Context by hand. Swap to a stable public eval hook if/when
-# one lands upstream.
+# `arbitrary` feature unlocks both `ergotree_interpreter::eval::test_util::try_eval_out`
+# (the only public arbitrary-root eval entry) and the `Arbitrary for Context` impl we
+# clone a deterministic template from. Swap to a stable public eval hook if one lands.
 ergotree-interpreter = { path = "../sigma-rust/ergotree-interpreter", features = ["arbitrary"] }
 ergo-chain-types = { path = "../sigma-rust/ergo-chain-types" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Used to generate the deterministic Context template (the `arbitrary` feature already
+# pulls proptest in); pinned to the same major as sigma-rust's so the impls match.
+proptest = "1"
+
+[features]
+# Opt-in: read JIT cost (`jit_cost_value`) and bind segregated constants
+# (`with_constants`) — both exist only in sigma-rust builds carrying the JIT-cost +
+# lazy-constants work (e.g. the eni branch). Default off ⇒ upstream-compatible:
+# evaluates values, emits no cost (lands in the costing-coal column).
+jit-cost = []

@@ -1,25 +1,24 @@
-//! Eval wiring: build a deterministic `Context`, evaluate a vector's tree applied
-//! to its input (bound at ContextExtension var 1) under the entry's versions, and
-//! capture the raw JIT cost.
+//! Eval wiring: build a `Context`, evaluate a vector's tree applied to its input
+//! (bound at ContextExtension var 1) under the entry's versions, and — when built
+//! with the `jit-cost` feature — capture the raw JIT cost.
 //!
-//! The corpus is 82/84 context-independent (only `verify_should_respect_Context`
-//! and one NEQ vector read context), so a fixed minimal context is correct for the
-//! bulk; the header/box values are placeholders (unread). Matching the JVM's
-//! `ErgoLikeContextTesting.dummy` for the two context-reading files is a follow-up.
+//! **Impl-agnostic by construction.** The `Context` is cloned from a once-generated
+//! `arbitrary` value, so its *field set* is whatever sigma-rust we're built against —
+//! no struct literal pins the runner to one fork. Only the fields eval depends on
+//! (input binding + versions) are overwritten; the corpus is 82/84 context-independent,
+//! so the placeholder boxes/headers are unread for the bulk.
 //!
-//! Eval entry: `ergotree_interpreter::eval::test_util::try_eval_out` (the `arbitrary`
-//! feature's public arbitrary-root path) — it evaluates on the *passed* ctx, so the
-//! accumulated `jit_cost_value()` is readable afterward.
+//! The cost path (`jit_cost_value`) and lazy-constants path (`with_constants`) exist
+//! only in sigma-rust builds carrying that work (e.g. the eni branch), so they are
+//! gated behind the `jit-cost` feature. Without it the runner still evaluates values
+//! but reports no cost — so an impl with no JIT-cost model (upstream develop) builds
+//! and runs, it just lands in the coal column on cost. Eval entry:
+//! `ergotree_interpreter::eval::test_util::try_eval_out` (the `arbitrary` feature's
+//! public arbitrary-root path), evaluating on the passed ctx.
 
-use core::cell::Cell;
-
-use ergo_chain_types::{ADDigest, AutolykosSolution, BlockId, Digest32, EcPoint, Header, PreHeader, Votes};
 use ergotree_ir::chain::context::arbitrary::DummyContextExtensionProvider;
 use ergotree_ir::chain::context::Context;
 use ergotree_ir::chain::context_extension::ContextExtension;
-use ergotree_ir::chain::ergo_box::box_value::BoxValue;
-use ergotree_ir::chain::ergo_box::{ErgoBox, NonMandatoryRegisters};
-use ergotree_ir::chain::tx_id::TxId;
 use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
@@ -30,7 +29,12 @@ use crate::sval;
 
 /// One entry's outcome, per the runner contract §3.
 pub enum Outcome {
-    Success { value: serde_json::Value, cost: u64 },
+    /// Evaluated to a value. `cost` is `Some` only when built with `jit-cost`;
+    /// `None` means the impl has no JIT-cost model (cost not measured).
+    Success {
+        value: serde_json::Value,
+        cost: Option<u64>,
+    },
     Errored,
     /// Contract outcome (§3) for an op/method/type the runner doesn't implement.
     /// Not yet emitted — sigma-rust eval reports unimplemented ops as generic
@@ -44,6 +48,10 @@ impl Outcome {
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             Outcome::Success { value, cost } => {
+                // TODO: once SANTA splits eval/costing, an unmeasured cost is honestly
+                // `null` ("cost not emitted"). Until the schema allows that on a
+                // success, emit 0 — a number that simply mismatches the blessed cost.
+                let cost = cost.map_or_else(|| serde_json::json!(0), |c| serde_json::json!(c));
                 serde_json::json!({"value": value, "cost": cost, "error": serde_json::Value::Null})
             }
             Outcome::Errored => {
@@ -59,101 +67,41 @@ impl Outcome {
     }
 }
 
-/// The secp256k1 generator as an `EcPoint`. Any valid point works for the
-/// placeholder box script / miner key (unread by context-independent ops).
-fn gen_point() -> EcPoint {
-    const G: [u8; 33] = [
-        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
-        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
-        0xf8, 0x17, 0x98,
-    ];
-    EcPoint::sigma_parse_bytes(&G).expect("generator point")
+thread_local! {
+    /// A once-generated `arbitrary` Context used purely as a struct shell: its field
+    /// set adapts to whatever sigma-rust we're built against, so no field literal pins
+    /// the runner to one impl. Fixed seed (deterministic); every field eval reads is
+    /// overwritten per entry, placeholder fields stay fixed.
+    static CONTEXT_TEMPLATE: Context<'static> = arbitrary_context();
 }
 
-/// A fixed, valid-but-placeholder self box (a generator-key P2PK box). Unread by
-/// context-independent ops; values are not meant to match the JVM dummy yet.
-fn dummy_box() -> ErgoBox {
-    let mut tree_bytes = vec![0x00u8, 0x08, 0xcd];
-    tree_bytes.extend_from_slice(
-        &gen_point()
-            .sigma_serialize_bytes()
-            .expect("generator serialize"),
-    );
-    let tree = ErgoTree::sigma_parse_bytes(&tree_bytes).expect("dummy P2PK tree");
-    ErgoBox::new(
-        BoxValue::try_from(1_000_000u64).expect("box value"),
-        tree,
-        None,
-        NonMandatoryRegisters::empty(),
-        0,
-        TxId(Digest32::zero()),
-        0,
-    )
-    .expect("dummy box")
+fn arbitrary_context() -> Context<'static> {
+    use proptest::prelude::any;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    any::<Context<'static>>()
+        .new_tree(&mut TestRunner::deterministic())
+        .expect("Context arbitrary strategy")
+        .current()
 }
 
-/// A fixed, valid-but-placeholder Autolykos-v2 header (zeroed digests, generator
-/// miner key). Unread by context-independent ops.
-fn dummy_header() -> Header {
-    Header {
-        version: 2,
-        id: BlockId(Digest32::zero()),
-        parent_id: BlockId(Digest32::zero()),
-        ad_proofs_root: Digest32::zero(),
-        state_root: ADDigest::zero(),
-        transaction_root: Digest32::zero(),
-        timestamp: 0,
-        n_bits: 0,
-        height: 0,
-        extension_root: Digest32::zero(),
-        autolykos_solution: AutolykosSolution {
-            miner_pk: Box::new(gen_point()),
-            pow_onetime_pk: None,
-            nonce: vec![0u8; 8],
-            pow_distance: None,
-        },
-        votes: Votes([0, 0, 0]),
-        unparsed_bytes: Box::new([]),
-    }
-}
-
-/// Build a deterministic `Context<'static>` with `input` bound at extension var 1,
-/// at the entry's `(tree_version, activated_version)`. Borrowed fields are leaked
-/// to `'static` (mirroring the upstream `Arbitrary` impl); the runner process is
-/// short-lived, so the leak is bounded and acceptable.
+/// Build a `Context<'static>` with `input` bound at ContextExtension var 1, at the
+/// entry's `(tree_version, activated_version)`. Cloned from the arbitrary template
+/// (impl-agnostic field set); the leaked extension is `'static` (short-lived process).
 fn build_context(input: Option<Constant>, tree_version: u8, activated_version: u8) -> Context<'static> {
-    let self_box: &'static ErgoBox = Box::leak(Box::new(dummy_box()));
-    let outputs: &'static [ErgoBox] = core::slice::from_ref(self_box);
-    let inputs = vec![self_box].try_into().expect("inputs bounded vec");
+    let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
     let mut ext = ContextExtension::empty();
     if let Some(c) = input {
         ext.values.insert(1u8, c);
     }
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
-    let provider: &'static DummyContextExtensionProvider =
-        Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
+    ctx.extension = ext;
+    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
 
-    let header = dummy_header();
-    let mut pre_header = PreHeader::from(header.clone());
-    pre_header.version = activated_version + 1;
-    let headers: [Header; 10] = core::array::from_fn(|_| header.clone());
-
-    Context {
-        height: 0,
-        self_box,
-        outputs,
-        data_inputs: None,
-        inputs,
-        pre_header,
-        headers,
-        extension: ext,
-        tree_version: Cell::new(ErgoTreeVersion::from(tree_version)),
-        extension_provider: provider,
-        jit_cost: Cell::new(0),
-        jit_cost_limit: None,
-        constants: None,
-    }
+    ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
+    ctx.pre_header.version = activated_version + 1;
+    ctx
 }
 
 /// Make tree bytes leniently parseable. sigma-rust's `ErgoTree::sigma_parse` rejects
@@ -206,17 +154,28 @@ pub fn run_entry(
         Ok(r) => r,
         Err(_) => return Outcome::Errored,
     };
+
+    let ctx = build_context(input_constant, tree_version, activated_version);
+
+    // Constant binding differs by impl: with `jit-cost` (eni) the tree keeps
+    // ConstPlaceholders resolved lazily from the context; without it (upstream)
+    // constants are already inlined in `root_expr`.
+    #[cfg(feature = "jit-cost")]
     let constants = match tree.constants() {
         Ok(c) => c,
         Err(_) => return Outcome::Errored,
     };
+    #[cfg(feature = "jit-cost")]
+    let eval_ctx = ctx.with_constants(constants);
+    #[cfg(not(feature = "jit-cost"))]
+    let eval_ctx = ctx;
 
-    let ctx = build_context(input_constant, tree_version, activated_version);
-    let ctx_with_c = ctx.with_constants(constants);
-
-    match try_eval_out::<Value<'static>>(root, &ctx_with_c) {
+    match try_eval_out::<Value<'static>>(root, &eval_ctx) {
         Ok(v) => {
-            let cost = ctx_with_c.jit_cost_value();
+            #[cfg(feature = "jit-cost")]
+            let cost = Some(eval_ctx.jit_cost_value());
+            #[cfg(not(feature = "jit-cost"))]
+            let cost = None;
             match sval::encode_value(&v) {
                 Ok(value) => Outcome::Success { value, cost },
                 Err(_) => Outcome::Unrepresentable,
