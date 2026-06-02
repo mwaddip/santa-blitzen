@@ -1,6 +1,8 @@
 {
   "name": "blitzen-develop",
   "label": "blitzen (sigma-rust @ develop)",
-  "scope": ["v5", "v6"],
+  "version": "v6",
+  "tiers": ["eval"],
+  "cost": false,
   "impl": "https://github.com/ergoplatform/sigma-rust.git#develop"
 }
