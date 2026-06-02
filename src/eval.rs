@@ -150,10 +150,22 @@ pub fn run_entry(
         Ok(t) => t,
         Err(_) => return Outcome::Errored,
     };
+    // Root accessor is impl-specific (gate it like the constants block below): eni's
+    // `root_expr()` (jit-cost) borrows the root with ConstPlaceholders retained for lazy
+    // `with_constants` resolution; upstream develop has no `root_expr()` — its
+    // `proposition()` returns an owned `Expr` with constants already inlined.
+    #[cfg(feature = "jit-cost")]
     let root = match tree.root_expr() {
         Ok(r) => r,
         Err(_) => return Outcome::Errored,
     };
+    #[cfg(not(feature = "jit-cost"))]
+    let root_owned = match tree.proposition() {
+        Ok(r) => r,
+        Err(_) => return Outcome::Errored,
+    };
+    #[cfg(not(feature = "jit-cost"))]
+    let root = &root_owned;
 
     let ctx = build_context(input_constant, tree_version, activated_version);
 
