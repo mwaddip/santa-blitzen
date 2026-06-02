@@ -66,8 +66,11 @@ never self-judges.
   SANTA checked out at `<impl-path>/sigma-rust` (wiring it to our `../sigma-rust`
   path-dep), then runs `blitzen emit`. Exit 0 = actuals written; non-zero = the runner
   itself failed.
-- **`runner.json`** — declares `name`/`label`, the `scope` of vector dirs claimed
-  (`v5`, `v6`), and `impl` = `<url>#<ref>` (the sigma-rust to test).
+- **`runner.json`** — the runner manifest: this runner's identity (`name`/`label`),
+  its `impl` = `<url>#<ref>` (the sigma-rust to test), and the selection metadata the
+  orchestrator grades/filters on. Its exact field set is defined by the
+  [SANTA runner contract](https://github.com/mwaddip/santa/blob/HEAD/docs/contract/runner-contract.md)
+  — a living document; refer to it rather than duplicating the schema here.
 
 SANTA owns the `impl` checkout (clones `<url>` per-instance, checks out `<ref>`), so two
 runner dirs — e.g. `blitzen-develop` and `blitzen-eni` — pin different refs and compare
