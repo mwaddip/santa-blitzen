@@ -222,6 +222,17 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
                 .map_err(|e| BridgeError::Decode(format!("BigInt parse: {:?}", e)))?;
             lit(SType::SBigInt, Literal::BigInt(n))
         }
+        "UnsignedBigInt" => {
+            use core::str::FromStr;
+            // Decimal string (contract §4), like Long/BigInt. Parse straight to
+            // UnsignedBigInt — NOT via BigInt256, which would reject values in
+            // the 2^255..2^256 range that are valid unsigned.
+            let n = ergotree_ir::unsignedbigint256::UnsignedBigInt::from_str(&str_val(
+                "UnsignedBigInt",
+            )?)
+            .map_err(|e| BridgeError::Decode(format!("UnsignedBigInt parse: {:?}", e)))?;
+            lit(SType::SUnsignedBigInt, Literal::UnsignedBigInt(n))
+        }
         "GroupElement" => {
             use ergo_chain_types::EcPoint;
             let ge = EcPoint::sigma_parse_bytes(&hex_field("bytes_hex")?)
@@ -355,6 +366,18 @@ mod tests {
     fn rt_bigint_is_string() {
         roundtrip(json!({"kind": "BigInt", "value": "-45"}));
         roundtrip(json!({"kind": "BigInt", "value": "123456789012345678901234567890"}));
+    }
+
+    #[test]
+    fn rt_unsigned_bigint_is_string() {
+        roundtrip(json!({"kind": "UnsignedBigInt", "value": "0"}));
+        roundtrip(json!({"kind": "UnsignedBigInt", "value": "123456789012345678901234567890"}));
+        // 2^256 - 1: above the signed BigInt256 ceiling, so this fails if the
+        // decode routes through BigInt256 instead of parsing unsigned directly.
+        roundtrip(json!({
+            "kind": "UnsignedBigInt",
+            "value": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        }));
     }
 
     #[test]
