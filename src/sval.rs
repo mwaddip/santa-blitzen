@@ -7,8 +7,8 @@
 //!     sigma-rust `Constant`, to bind at ContextExtension var 1.
 //!
 //! Frictions (per the contract): Long/BigInt/UnsignedBigInt are decimal **strings**;
-//! GroupElement/SigmaProp/Box/Header are **lower-case** hex; cost is handled by the
-//! caller (it is not an SValue). Kinds with no canonical encoding (Unit, AvlTree,
+//! GroupElement/SigmaProp/Box/Header/AvlTree are **lower-case** hex; cost is handled by the
+//! caller (it is not an SValue). Kinds with no canonical encoding (Unit,
 //! Context, PreHeader, Global, Lambda, String) surface as [`BridgeError::Unrepresentable`]
 //! so the runner can emit the contract's `unrepresentable` tag.
 
@@ -248,10 +248,20 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
                 .map_err(|e| BridgeError::Decode(format!("Box parse: {:?}", e)))?;
             lit(SType::SBox, Literal::CBox(ergotree_ir::reference::Ref::from(b)))
         }
+        "AvlTree" => {
+            use ergotree_ir::mir::avl_tree_data::AvlTreeData;
+            let a = AvlTreeData::sigma_parse_bytes(&hex_field("bytes_hex")?)
+                .map_err(|e| BridgeError::Decode(format!("AvlTree parse: {:?}", e)))?;
+            lit(SType::SAvlTree, Literal::AvlTree(Box::new(a)))
+        }
         "Header" => {
-            return Err(BridgeError::Decode(
-                "Header input not yet wired".to_string(),
-            ))
+            // Header serializes via Scorex (not SigmaSerializable); parse the input bytes the
+            // same way sigma-rust's DataSerializer does (Header::scorex_parse).
+            use ergo_chain_types::Header;
+            use sigma_ser::ScorexSerializable;
+            let h = Header::scorex_parse_bytes(&hex_field("bytes_hex")?)
+                .map_err(|e| BridgeError::Decode(format!("Header parse: {:?}", e)))?;
+            lit(SType::SHeader, Literal::Header(Box::new(h)))
         }
         "Coll" => {
             let elem = decode_stype(&j["elem"])?;
