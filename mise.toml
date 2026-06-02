@@ -1,0 +1,6 @@
+# Blitzen's toolchain — self-provisioned by santa-run via `mise exec` (presence-as-state:
+# it lives with the runner, so SANTA's ./conform stays toolchain-agnostic). rust is
+# rustup-delegated by mise's core backend. Per-branch (develop/eni), so the two forks can
+# pin different rust versions independently.
+[tools]
+rust = "1.92.0"

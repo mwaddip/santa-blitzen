@@ -10,8 +10,18 @@
 # This is the *eni* runner: sigma-rust here carries the JIT-cost + lazy-constants
 # work, so we build with `--features jit-cost` to read real costs. (The develop
 # runner omits the flag — upstream has no cost model, so it emits values only.)
+#
+# Toolchain self-provisioned (presence-as-state: mise.toml) — re-exec once under
+# `mise exec` so cargo is on PATH for the build. The orchestrator stays
+# toolchain-agnostic; `mise` on PATH is the one bootstrap dep; santa-run trusts its
+# own co-located config.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -z "${SANTA_MISE_ACTIVE:-}" ]; then
+  mise trust "$here/mise.toml" >/dev/null
+  mise --cd "$here" install
+  exec env SANTA_MISE_ACTIVE=1 mise --cd "$here" exec -- "$0" "$@"
+fi
 impl="$(cd "$1" && pwd)"
 ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
 cargo build --release --features jit-cost --manifest-path "$here/Cargo.toml" >/dev/null
