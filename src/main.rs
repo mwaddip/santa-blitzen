@@ -42,6 +42,23 @@ fn main() {
     }
 }
 
+/// Run one entry's eval under a panic net (never-panic, contract §3): an otherwise-uncaught
+/// panic becomes the `panicked` outcome (coal, message in `note`) so the run continues. The
+/// closure asserts unwind-safety at the call site (it only reads borrowed vector data).
+fn caught_actual<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
+    match std::panic::catch_unwind(f) {
+        Ok(j) => j,
+        Err(p) => {
+            let note = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            eval::Outcome::Panicked { note: format!("panic: {note}") }.to_json()
+        }
+    }
+}
+
 /// Evaluate every entry of one vector file (blind), pairing each entry's `name`
 /// with its actual JSON and the vector's blessed `expected` JSON. Returns empty for
 /// a file carrying no `entries` (not an eval vector). A malformed vector aborts the
@@ -65,7 +82,9 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
             let inputs = entry.get("inputs").and_then(|v| v.as_array());
             let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
             let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
-            let actual = eval::run_entry(&tree_bytes, input, inputs, tree_v, act_v).to_json();
+            let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
+                eval::run_entry(&tree_bytes, input, inputs, tree_v, act_v).to_json()
+            }));
             let expected = entry["expected"].clone();
             (name, actual, expected)
         })
@@ -177,4 +196,26 @@ fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caught_actual;
+    use crate::eval::Outcome;
+    use serde_json::Value as J;
+
+    #[test]
+    fn caught_actual_turns_a_panic_into_panicked() {
+        let j = caught_actual(std::panic::AssertUnwindSafe(|| -> J { panic!("kaboom") }));
+        assert_eq!(j["error"], "panicked");
+        assert_eq!(j["value"], J::Null);
+        assert_eq!(j["cost"], J::Null);
+        assert!(j["note"].as_str().unwrap().contains("kaboom"));
+    }
+
+    #[test]
+    fn caught_actual_passes_through_a_normal_outcome() {
+        let j = caught_actual(std::panic::AssertUnwindSafe(|| Outcome::Errored.to_json()));
+        assert_eq!(j["error"], "errored");
+    }
 }

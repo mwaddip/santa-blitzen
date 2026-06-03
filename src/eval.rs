@@ -42,6 +42,9 @@ pub enum Outcome {
     #[allow(dead_code)]
     NotImplemented,
     Unrepresentable,
+    /// An otherwise-uncaught panic during this entry's eval (never-panic, contract §3):
+    /// always coal, message in `note`. Constructed by main's panic net, not by run_entry.
+    Panicked { note: String },
 }
 
 impl Outcome {
@@ -62,6 +65,9 @@ impl Outcome {
             }
             Outcome::Unrepresentable => {
                 serde_json::json!({"value": null, "cost": null, "error": "unrepresentable"})
+            }
+            Outcome::Panicked { note } => {
+                serde_json::json!({"value": null, "cost": null, "error": "panicked", "note": note})
             }
         }
     }
