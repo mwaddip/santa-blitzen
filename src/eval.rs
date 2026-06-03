@@ -41,9 +41,10 @@ pub enum Outcome {
     /// errors not yet distinguished from a genuine `errored`. TODO: map them.
     #[allow(dead_code)]
     NotImplemented,
-    Unrepresentable,
-    /// An otherwise-uncaught panic during this entry's eval (never-panic, contract §3):
-    /// always coal, message in `note`. Constructed by main's panic net, not by run_entry.
+    /// A failure that isn't a clean eval `errored`: an otherwise-uncaught panic caught by main's
+    /// net, OR a SANTA-bridge failure (input decode / result encode) that `run_entry` records
+    /// directly. Never-panic, contract §3: always coal, message in `note`. The runner reports the
+    /// real failure rather than pre-classifying it into a softer "excuse" outcome.
     Panicked { note: String },
 }
 
@@ -62,9 +63,6 @@ impl Outcome {
             }
             Outcome::NotImplemented => {
                 serde_json::json!({"value": null, "cost": null, "error": "not-implemented"})
-            }
-            Outcome::Unrepresentable => {
-                serde_json::json!({"value": null, "cost": null, "error": "unrepresentable"})
             }
             Outcome::Panicked { note } => {
                 serde_json::json!({"value": null, "cost": null, "error": "panicked", "note": note})
@@ -157,12 +155,13 @@ pub fn run_entry(
     tree_version: u8,
     activated_version: u8,
 ) -> Outcome {
-    // Decode the input. v2: a single SValue bound at ContextExtension var 1. A
-    // representable-but-unsupported input kind ⇒ unrepresentable.
+    // Decode the input. v2: a single SValue bound at ContextExtension var 1. A bridge failure
+    // here (sigma-rust can't parse the input bytes, or SANTA can't construct the kind) is the
+    // runner's own failure ⇒ recorded as `panicked` with the cause in `note`, never pre-classified.
     let input_constant = match input {
         Some(j) => match sval::decode_constant(j) {
             Ok(c) => Some(c),
-            Err(_) => return Outcome::Unrepresentable,
+            Err(e) => return Outcome::Panicked { note: format!("input decode: {:?}", e) },
         },
         None => None,
     };
@@ -183,7 +182,7 @@ pub fn run_entry(
                             Ok(c) => {
                                 ext.values.insert(id, c);
                             }
-                            Err(_) => return Outcome::Unrepresentable,
+                            Err(e) => return Outcome::Panicked { note: format!("input decode (v3): {:?}", e) },
                         }
                     }
                 }
@@ -244,7 +243,7 @@ pub fn run_entry(
             let cost = None;
             match sval::encode_value(&v) {
                 Ok(value) => Outcome::Success { value, cost },
-                Err(_) => Outcome::Unrepresentable,
+                Err(e) => Outcome::Panicked { note: format!("result encode: {:?}", e) },
             }
         }
         Err(_) => Outcome::Errored,

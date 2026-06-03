@@ -9,8 +9,9 @@
 //! Frictions (per the contract): Long/BigInt/UnsignedBigInt are decimal **strings**;
 //! GroupElement/SigmaProp/Box/Header/AvlTree are **lower-case** hex; cost is handled by the
 //! caller (it is not an SValue). Kinds with no canonical encoding (Unit,
-//! Context, PreHeader, Global, Lambda, String) surface as [`BridgeError::Unrepresentable`]
-//! so the runner can emit the contract's `unrepresentable` tag.
+//! Context, PreHeader, Global, Lambda, String) surface as [`BridgeError::Encode`], which the
+//! runner records faithfully as a `panicked` note (contract §3) — a SANTA-side gap to wire,
+//! never an "excuse" outcome.
 
 use ergotree_ir::mir::constant::{Constant, Literal};
 use ergotree_ir::mir::value::{CollKind, NativeColl, Value};
@@ -25,8 +26,9 @@ use serde_json::{json, Value as J};
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum BridgeError {
-    /// The runner has the type but cannot encode/represent this value (contract `unrepresentable`).
-    Unrepresentable(String),
+    /// The bridge cannot encode this sigma-rust Value to canonical JSON (a SANTA-side gap;
+    /// surfaced to the runner as a `panicked` note, not a contract outcome of its own).
+    Encode(String),
     /// Malformed SANTA JSON on the decode side.
     Decode(String),
 }
@@ -55,7 +57,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, BridgeError> {
 fn ser_bytes<T: SigmaSerializable>(t: &T, what: &str) -> Result<String, BridgeError> {
     t.sigma_serialize_bytes()
         .map(|b| hex_lower(&b))
-        .map_err(|e| BridgeError::Unrepresentable(format!("{} serialize: {:?}", what, e)))
+        .map_err(|e| BridgeError::Encode(format!("{} serialize: {:?}", what, e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +138,7 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
         }
         Value::CBox(b) => json!({"kind": "Box", "bytes_hex": ser_bytes(&**b, "Box")?}),
         Value::Header(_) => {
-            return Err(BridgeError::Unrepresentable(
+            return Err(BridgeError::Encode(
                 "Header SValue encoding not yet wired".to_string(),
             ))
         }
@@ -150,7 +152,7 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             None => json!({"kind": "Option", "value": J::Null}),
         },
         other => {
-            return Err(BridgeError::Unrepresentable(format!(
+            return Err(BridgeError::Encode(format!(
                 "no canonical SValue encoding for {:?}",
                 core::mem::discriminant(other)
             )))
