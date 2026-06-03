@@ -104,6 +104,23 @@ fn build_context(input: Option<Constant>, tree_version: u8, activated_version: u
     ctx
 }
 
+/// Build a `Context<'static>` carrying per-input ContextExtensions (santa-eval/v3,
+/// getVarFromInput) — one extension per spending-tx input, read by index. The top-level
+/// extension is empty (getVar is not used here).
+fn build_context_v3(
+    input_extensions: Vec<ContextExtension>,
+    tree_version: u8,
+    activated_version: u8,
+) -> Context<'static> {
+    let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
+    let empty: &'static ContextExtension = Box::leak(Box::new(ContextExtension::empty()));
+    ctx.extension = empty;
+    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(input_extensions)));
+    ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
+    ctx.pre_header.version = activated_version + 1;
+    ctx
+}
+
 /// Make tree bytes leniently parseable. sigma-rust's `ErgoTree::sigma_parse` rejects
 /// a non-`SigmaProp` root on size-bit (v1+) trees (→ `Unparsed`/`RootTpeError`), but
 /// SANTA corpus roots are arbitrary-typed. Clearing the size bit and dropping the
@@ -130,16 +147,44 @@ fn lenient_tree_bytes(bytes: &[u8]) -> Vec<u8> {
 pub fn run_entry(
     tree_bytes: &[u8],
     input: Option<&serde_json::Value>,
+    inputs: Option<&Vec<serde_json::Value>>,
     tree_version: u8,
     activated_version: u8,
 ) -> Outcome {
-    // Decode the input SValue (bound at var 1). A representable-but-unsupported
-    // input kind ⇒ unrepresentable.
+    // Decode the input. v2: a single SValue bound at ContextExtension var 1. A
+    // representable-but-unsupported input kind ⇒ unrepresentable.
     let input_constant = match input {
         Some(j) => match sval::decode_constant(j) {
             Ok(c) => Some(c),
             Err(_) => return Outcome::Unrepresentable,
         },
+        None => None,
+    };
+    // v3 (getVarFromInput): per-input ContextExtensions — one {varId -> Constant} map per
+    // spending-tx input, read by index. Present ⇒ a v3 entry (build_context_v3 below).
+    let input_extensions: Option<Vec<ContextExtension>> = match inputs {
+        Some(arr) => {
+            let mut exts = Vec::with_capacity(arr.len());
+            for inp in arr {
+                let mut ext = ContextExtension::empty();
+                if let Some(map) = inp.get("extension").and_then(|e| e.as_object()) {
+                    for (k, v) in map {
+                        let id: u8 = match k.parse() {
+                            Ok(id) => id,
+                            Err(_) => return Outcome::Errored,
+                        };
+                        match sval::decode_constant(v) {
+                            Ok(c) => {
+                                ext.values.insert(id, c);
+                            }
+                            Err(_) => return Outcome::Unrepresentable,
+                        }
+                    }
+                }
+                exts.push(ext);
+            }
+            Some(exts)
+        }
         None => None,
     };
 
@@ -167,7 +212,10 @@ pub fn run_entry(
     #[cfg(not(feature = "jit-cost"))]
     let root = &root_owned;
 
-    let ctx = build_context(input_constant, tree_version, activated_version);
+    let ctx = match input_extensions {
+        Some(exts) => build_context_v3(exts, tree_version, activated_version),
+        None => build_context(input_constant, tree_version, activated_version),
+    };
 
     // Constant binding differs by impl: with `jit-cost` (eni) the tree keeps
     // ConstPlaceholders resolved lazily from the context; without it (upstream)

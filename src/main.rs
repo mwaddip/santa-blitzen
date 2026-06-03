@@ -62,9 +62,10 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                 .expect("entry missing tree_bytes_hex");
             let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
             let input = entry.get("input").filter(|v| !v.is_null());
+            let inputs = entry.get("inputs").and_then(|v| v.as_array());
             let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
             let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
-            let actual = eval::run_entry(&tree_bytes, input, tree_v, act_v).to_json();
+            let actual = eval::run_entry(&tree_bytes, input, inputs, tree_v, act_v).to_json();
             let expected = entry["expected"].clone();
             (name, actual, expected)
         })
