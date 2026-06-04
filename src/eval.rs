@@ -13,8 +13,10 @@
 //! gated behind the `jit-cost` feature. Without it the runner still evaluates values
 //! but reports no cost — so an impl with no JIT-cost model (upstream develop) builds
 //! and runs, it just lands in the coal column on cost. Eval entry:
-//! `ergotree_interpreter::eval::test_util::try_eval_out` (the `arbitrary` feature's
-//! public arbitrary-root path), evaluating on the passed ctx.
+//! `ergotree_interpreter::eval::test_util::try_eval_with_deserialize` — substitutes
+//! DeserializeContext nodes against the entry's context (the eager whole-tree pass), then
+//! evals on the passed ctx via `try_eval_out` (so JIT-cost capture is unchanged; a
+//! substitution failure surfaces as `errored`). The `arbitrary` feature's public path.
 
 use ergotree_ir::chain::context::arbitrary::DummyContextExtensionProvider;
 use ergotree_ir::chain::context::Context;
@@ -23,7 +25,7 @@ use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
 use ergotree_ir::serialization::SigmaSerializable;
-use ergotree_interpreter::eval::test_util::try_eval_out;
+use ergotree_interpreter::eval::test_util::try_eval_with_deserialize;
 
 use crate::sval;
 
@@ -235,7 +237,7 @@ pub fn run_entry(
     #[cfg(not(feature = "jit-cost"))]
     let eval_ctx = ctx;
 
-    match try_eval_out::<Value<'static>>(root, &eval_ctx) {
+    match try_eval_with_deserialize::<Value<'static>>(root, &eval_ctx) {
         Ok(v) => {
             #[cfg(feature = "jit-cost")]
             let cost = Some(eval_ctx.jit_cost_value());
