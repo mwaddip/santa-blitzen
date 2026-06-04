@@ -16,6 +16,9 @@ ergotree-ir = { path = "../sigma-rust/ergotree-ir" }
 # clone a deterministic template from. Swap to a stable public eval hook if one lands.
 ergotree-interpreter = { path = "../sigma-rust/ergotree-interpreter", features = ["arbitrary"] }
 ergo-chain-types = { path = "../sigma-rust/ergo-chain-types" }
+# Signed `Transaction` (SigmaSerializable) lives here — the serializer for the wire
+# Transaction round-trip. Heavier than the IR crates (the footprint cost of tx support).
+ergo-lib = { path = "../sigma-rust/ergo-lib" }
 # ScorexSerializable (Header parses via scorex_parse_bytes, not SigmaSerializable).
 sigma-ser = { path = "../sigma-rust/sigma-ser" }
 serde = { version = "1", features = ["derive"] }
