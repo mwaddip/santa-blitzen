@@ -2,7 +2,7 @@
   "name": "blitzen-eni",
   "label": "blitzen (sigma-rust @ eni)",
   "version": "v6",
-  "tiers": ["eval"],
+  "tiers": ["eval", "wire"],
   "cost": true,
   "impl": "https://github.com/mwaddip/sigma-rust.git#ergo-node-integration"
 }

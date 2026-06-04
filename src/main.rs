@@ -16,6 +16,7 @@
 
 mod eval;
 mod sval;
+mod wire;
 
 use serde_json::Value as J;
 use std::path::{Path, PathBuf};
@@ -70,23 +71,41 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
         Some(e) => e,
         None => return Vec::new(),
     };
+    // Dispatch on the schema discriminator: wire entries round-trip `bytes_hex` (the blessed
+    // expected IS the entry's own bytes — round-trip to self); eval entries evaluate
+    // `tree_bytes_hex` against the blessed `expected`.
+    let is_wire = vector["schema"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("santa-wire/"));
     entries
         .iter()
         .map(|entry| {
             let name = entry["name"].as_str().unwrap_or("<unnamed>").to_string();
-            let tree_hex = entry["tree_bytes_hex"]
-                .as_str()
-                .expect("entry missing tree_bytes_hex");
-            let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
-            let input = entry.get("input").filter(|v| !v.is_null());
-            let inputs = entry.get("inputs").and_then(|v| v.as_array());
-            let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
-            let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
-            let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                eval::run_entry(&tree_bytes, input, inputs, tree_v, act_v).to_json()
-            }));
-            let expected = entry["expected"].clone();
-            (name, actual, expected)
+            if is_wire {
+                let kind = entry["kind"].as_str().expect("wire entry missing kind");
+                let bytes_hex = entry["bytes_hex"]
+                    .as_str()
+                    .expect("wire entry missing bytes_hex");
+                let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
+                    wire::run_entry(kind, bytes_hex).to_json()
+                }));
+                let expected = serde_json::json!({"bytes_hex": bytes_hex, "error": J::Null});
+                (name, actual, expected)
+            } else {
+                let tree_hex = entry["tree_bytes_hex"]
+                    .as_str()
+                    .expect("entry missing tree_bytes_hex");
+                let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
+                let input = entry.get("input").filter(|v| !v.is_null());
+                let inputs = entry.get("inputs").and_then(|v| v.as_array());
+                let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
+                let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
+                let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
+                    eval::run_entry(&tree_bytes, input, inputs, tree_v, act_v).to_json()
+                }));
+                let expected = entry["expected"].clone();
+                (name, actual, expected)
+            }
         })
         .collect()
 }
@@ -188,7 +207,7 @@ fn collect_vector_files(path: &Path) -> Vec<PathBuf> {
     }
 }
 
-fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
         return Err(format!("odd-length hex: {}", s));
     }
