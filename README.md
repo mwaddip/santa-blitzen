@@ -1,11 +1,14 @@
 # Blitzen
 
-The **sigma-rust** eval-tier runner for the [SANTA](../santa) Ergo consensus
-conformance suite. Blitzen evaluates SANTA's committed eval vectors through
-sigma-rust and reports each entry's `{ value, cost, error }` — the runner half
-of the `run(vector) → actuals` contract (SANTA `docs/contract/runner-contract.md`).
-The JVM reference (sigma-state) is canonical; where sigma-rust diverges from the
-blessed `expected`, that divergence is a **finding surfaced**, not a bug hidden.
+The **sigma-rust** runner for the [SANTA](../santa) Ergo consensus conformance
+suite, covering the **eval**, **wire**, and **transaction** tiers. Blitzen runs
+SANTA's committed vectors through sigma-rust and reports per-entry actuals —
+eval `{ value, cost, error }`, wire `{ bytes_hex, error }`, transaction
+`{ valid, cost, error }` — the runner half of the `run(vector) → actuals`
+contract (SANTA `docs/contract/runner-contract.md`).
+The JVM reference (sigma-state / ergo-core) is canonical; where sigma-rust
+diverges from the blessed `expected`, that divergence is a **finding surfaced**,
+not a bug hidden.
 
 Reindeer naming: Rudolph = the JVM reference, Dasher = ergots, **Blitzen = sigma-rust**.
 
@@ -36,14 +39,14 @@ cargo build
 cargo run -- ../santa/vectors/eval/v5
 # emit: write actuals (no comparison) for the SANTA orchestrator, one file per vector
 cargo run -- emit ../santa/vectors/eval/v5 /tmp/blitzen-actuals
-cargo test            # SValue ⇄ JSON round-trip tests
+cargo test            # unit tests (sval round-trips, wire, transaction, panic net)
 ```
 
 Blitzen is **version-agnostic** — it evaluates each entry under that entry's
 declared `(activated, ergoTree)` versions, so it runs the v6 corpus too once that
 lands.
 
-## Design (3 modules)
+## Design (5 modules)
 
 - **`sval.rs`** — the SValue ⇄ canonical-JSON bridge (contract §4): `Long`/`BigInt`
   as decimal strings, lower-case hex, `SigmaProp` as the **bare** serialized
@@ -52,6 +55,17 @@ lands.
   + **lenient tree parse** (clear the size bit + drop the size VLQ so a non-`SigmaProp`
   root skips sigma-rust's root-type check — SANTA roots are arbitrary-typed) + eval
   via `try_eval_out`, capturing the raw JIT cost from `ctx.jit_cost_value()`.
+- **`wire.rs`** — wire-tier round-trips: parse a kind's canonical bytes with the
+  sigma serializer and reserialize for byte-identity comparison.
+- **`transaction.rs`** — transaction-tier validation: decode a captured tx + its
+  input boxes from node-API JSON, build the minimal state context the JVM blesser
+  pinned (synthetic pre-header at the entry's height, blockVersion = activated+1,
+  launch-default parameters), and run ergo-lib's stateful validation
+  (`TransactionContext::validate` — the port of the node's `validateStateful`).
+  Accept ⇒ `valid: true` (+ the accumulated block-cost total on builds with
+  `jit-cost`; upstream has no tx-cost model ⇒ `cost: null`); any
+  `TxValidationError` ⇒ a clean `valid: false` + the impl's reason, mirroring the
+  JVM oracle's `validateStateful → Failure ⇒ invalid` mapping.
 - **`main.rs`** — the CLI + corpus driver. `run_entry` is **blind** (it never reads
   `expected`); the comparison is a separate structural-equality step (contract §5–6).
 

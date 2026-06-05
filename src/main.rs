@@ -1,4 +1,5 @@
-//! Blitzen — the sigma-rust eval-tier runner for the SANTA conformance suite.
+//! Blitzen — the sigma-rust runner for the SANTA conformance suite
+//! (eval + wire + transaction tiers).
 //!
 //! Two modes — `eval::run_entry` produces actuals **blind** (never reads `expected`)
 //! in both:
@@ -16,6 +17,7 @@
 
 mod eval;
 mod sval;
+mod transaction;
 mod wire;
 
 use serde_json::Value as J;
@@ -43,6 +45,14 @@ fn main() {
     }
 }
 
+/// Extract a printable message from a caught panic payload.
+fn panic_note(p: Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_string())
+}
+
 /// Run one entry's eval under a panic net (never-panic, contract §3): an otherwise-uncaught
 /// panic becomes the `panicked` outcome (coal, message in `note`) so the run continues. The
 /// closure asserts unwind-safety at the call site (it only reads borrowed vector data).
@@ -50,12 +60,20 @@ fn caught_actual<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
     match std::panic::catch_unwind(f) {
         Ok(j) => j,
         Err(p) => {
-            let note = p
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "non-string panic payload".to_string());
+            let note = panic_note(p);
             eval::Outcome::Panicked { note: format!("panic: {note}") }.to_json()
+        }
+    }
+}
+
+/// The same never-panic net for transaction entries — the panic shape carries `valid`
+/// (santa-transaction.actuals), not eval's `value`.
+fn caught_actual_tx<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
+    match std::panic::catch_unwind(f) {
+        Ok(j) => j,
+        Err(p) => {
+            let note = panic_note(p);
+            transaction::TxOutcome::Panicked { note: format!("panic: {note}") }.to_json()
         }
     }
 }
@@ -72,11 +90,14 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
         None => return Vec::new(),
     };
     // Dispatch on the schema discriminator: wire entries round-trip `bytes_hex` (the blessed
-    // expected IS the entry's own bytes — round-trip to self); eval entries evaluate
-    // `tree_bytes_hex` against the blessed `expected`.
+    // expected IS the entry's own bytes — round-trip to self); transaction entries validate
+    // the captured tx; eval entries evaluate `tree_bytes_hex` against the blessed `expected`.
     let is_wire = vector["schema"]
         .as_str()
         .is_some_and(|s| s.starts_with("santa-wire/"));
+    let is_tx = vector["schema"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("santa-transaction/"));
     entries
         .iter()
         .map(|entry| {
@@ -90,6 +111,19 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                     wire::run_entry(kind, bytes_hex).to_json()
                 }));
                 let expected = serde_json::json!({"bytes_hex": bytes_hex, "error": J::Null});
+                (name, actual, expected)
+            } else if is_tx {
+                let actual = caught_actual_tx(std::panic::AssertUnwindSafe(|| {
+                    transaction::run_entry(entry).to_json()
+                }));
+                // The blessed expected in the actuals vocabulary: {valid, cost, error:null}.
+                // `reason` is diagnostic-only (never graded) — dropped so self-compare
+                // doesn't coal on differing reject strings.
+                let expected = serde_json::json!({
+                    "valid": entry["expected"]["valid"],
+                    "cost": entry["expected"]["cost"],
+                    "error": J::Null,
+                });
                 (name, actual, expected)
             } else {
                 let tree_hex = entry["tree_bytes_hex"]
@@ -219,7 +253,7 @@ pub(crate) fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::caught_actual;
+    use super::{caught_actual, caught_actual_tx};
     use crate::eval::Outcome;
     use serde_json::Value as J;
 
@@ -230,6 +264,17 @@ mod tests {
         assert_eq!(j["value"], J::Null);
         assert_eq!(j["cost"], J::Null);
         assert!(j["note"].as_str().unwrap().contains("kaboom"));
+    }
+
+    #[test]
+    fn caught_actual_tx_turns_a_panic_into_a_tx_shaped_panicked() {
+        // The tx net's panic shape carries `valid` (santa-transaction.actuals), not
+        // eval's `value` — a value-shaped panic would fail the tx actuals schema.
+        let j = caught_actual_tx(std::panic::AssertUnwindSafe(|| -> J { panic!("tx kaboom") }));
+        assert_eq!(j["error"], "panicked");
+        assert_eq!(j["valid"], J::Null);
+        assert_eq!(j["cost"], J::Null);
+        assert!(j["note"].as_str().unwrap().contains("tx kaboom"));
     }
 
     #[test]
