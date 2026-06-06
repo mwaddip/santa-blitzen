@@ -137,6 +137,7 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             json!({"kind": "SigmaProp", "raw_hex": ser_bytes(sp.value(), "SigmaProp")?})
         }
         Value::CBox(b) => json!({"kind": "Box", "bytes_hex": ser_bytes(&**b, "Box")?}),
+        Value::AvlTree(a) => json!({"kind": "AvlTree", "bytes_hex": ser_bytes(&**a, "AvlTree")?}),
         Value::Header(_) => {
             return Err(BridgeError::Encode(
                 "Header SValue encoding not yet wired".to_string(),
@@ -442,5 +443,13 @@ mod tests {
         // A real ProveDlog (bare SigmaBoolean), from the blessed proveDlog_equivalence vector.
         roundtrip(json!({"kind": "SigmaProp",
             "raw_hex": "cd02288f0e55610c3355c89ed6c5de43cf20da145b8c54f03a29f481e540d94e9a69"}));
+    }
+
+    #[test]
+    fn rt_avl_tree() {
+        // A real AvlTreeData (serialized), from the blessed
+        // AvlTree_properties_equivalence vector (entry #0 input).
+        roundtrip(json!({"kind": "AvlTree",
+            "bytes_hex": "000183807f66b301530120ff7fc6bd6601ff01ff7f7d2bedbbffff00187fe8909406010101"}));
     }
 }
