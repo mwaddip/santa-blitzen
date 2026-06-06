@@ -132,10 +132,12 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                 let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
                 let input = entry.get("input").filter(|v| !v.is_null());
                 let inputs = entry.get("inputs").and_then(|v| v.as_array());
+                // santa-eval/v4: SELF box carries non-mandatory registers (R4-R9).
+                let self_registers = entry.get("selfRegisters").and_then(|v| v.as_object());
                 let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
                 let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
                 let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    eval::run_entry(&tree_bytes, input, inputs, tree_v, act_v).to_json()
+                    eval::run_entry(&tree_bytes, input, inputs, self_registers, tree_v, act_v).to_json()
                 }));
                 let expected = entry["expected"].clone();
                 (name, actual, expected)
@@ -253,9 +255,9 @@ pub(crate) fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{caught_actual, caught_actual_tx};
+    use super::{caught_actual, caught_actual_tx, hex_to_bytes};
     use crate::eval::Outcome;
-    use serde_json::Value as J;
+    use serde_json::{json, Value as J};
 
     #[test]
     fn caught_actual_turns_a_panic_into_panicked() {
@@ -281,5 +283,50 @@ mod tests {
     fn caught_actual_passes_through_a_normal_outcome() {
         let j = caught_actual(std::panic::AssertUnwindSafe(|| Outcome::Errored.to_json()));
         assert_eq!(j["error"], "errored");
+    }
+
+    /// santa-eval/v4 keystone: `accept-r4-long#0` from Box.getReg_dynamic_index.json.
+    /// Script: `{ SELF.getReg[Long](getVar[Int](1).get) }`
+    /// SELF R4 = Long 7, var 1 (input) = Int 4.
+    ///
+    /// The v4 arm is exercised (selfRegisters + var 1 decode, SELF box replacement).
+    /// sigma-rust currently cannot parse the dynamic getReg MethodCall tree (MethodId
+    /// 19 on SBox / type id 99) — the actual outcome is `errored` today — but that is
+    /// a conformance finding, not a harness property. When sigma-rust implements 99:19
+    /// the actual will flip to Some(Long 7) (`error: null`) — still a valid verdict.
+    ///
+    /// This test pins the ENVELOPE only:
+    ///   - outcome is well-formed: `error` is null or "errored" (a real verdict, never "panicked")
+    ///   - if errored: no `note` field (panicked carries a note; errored must not)
+    // do not pin the impl's verdict here — vectors do that; this test pins the envelope.
+    #[test]
+    fn v4_accept_r4_long_keystone() {
+        // tree_bytes_hex from the committed vector entry.
+        let tree_bytes = hex_to_bytes("1b0b00dc6313a701e4e3010405").expect("bad hex");
+        // selfRegisters: R4 = Long(7)
+        let self_registers_json = json!({"4": {"kind": "Long", "value": "7"}});
+        let self_registers = self_registers_json.as_object().unwrap();
+        // input (var 1): Int(4) — the dynamic register index
+        let input_json = json!({"kind": "Int", "value": 4});
+        // ergoTree v3, activated v3
+        let actual = crate::eval::run_entry(
+            &tree_bytes,
+            Some(&input_json),
+            None,
+            Some(self_registers),
+            3,
+            3,
+        ).to_json();
+        // Harness-shape: a real verdict — either a value (error null) or errored — never panicked.
+        let error = &actual["error"];
+        assert!(
+            error.is_null() || error == "errored",
+            "v4 envelope must yield a verdict (null or errored), got: {}",
+            actual
+        );
+        // If errored, no `note` (panicked carries a note; errored must not).
+        if error == "errored" {
+            assert!(actual.get("note").is_none(), "errored must not carry a note; got: {}", actual);
+        }
     }
 }

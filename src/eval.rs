@@ -21,6 +21,8 @@
 use ergotree_ir::chain::context::arbitrary::DummyContextExtensionProvider;
 use ergotree_ir::chain::context::Context;
 use ergotree_ir::chain::context_extension::ContextExtension;
+use ergotree_ir::chain::ergo_box::NonMandatoryRegisterId;
+use ergotree_ir::chain::ergo_box::NonMandatoryRegisters;
 use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
@@ -127,6 +129,45 @@ fn build_context_v3(
     ctx
 }
 
+/// Build a `Context<'static>` for santa-eval/v4: the SELF box carries custom non-mandatory
+/// registers (R4-R9 from `self_registers`), and `input` is bound at ContextExtension var 1.
+///
+/// `self_registers` maps "4"-"9" string keys to decoded `Constant`s (same as
+/// `sval::decode_constant` output). The registers must be densely packed from R4 — a gap
+/// (e.g. R4 + R6, missing R5) is rejected by `NonMandatoryRegisters::new` and bubbles up as
+/// `Panicked`. The SELF box from the template is cloned and its registers replaced via
+/// `with_additional_registers` (gated behind `arbitrary`, always enabled for blitzen).
+fn build_context_v4(
+    self_registers: Vec<(NonMandatoryRegisterId, Constant)>,
+    input: Constant,
+    tree_version: u8,
+    activated_version: u8,
+) -> Result<Context<'static>, String> {
+    let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
+
+    // Build NonMandatoryRegisters (densely packed from R4 upwards).
+    let regs = NonMandatoryRegisters::new(self_registers)
+        .map_err(|e| format!("selfRegisters: {}", e))?;
+
+    // Replace the SELF box registers: clone the template's self_box, apply registers.
+    let new_self: ergotree_ir::chain::ergo_box::ErgoBox =
+        ctx.self_box.clone().with_additional_registers(regs);
+    let new_self: &'static ergotree_ir::chain::ergo_box::ErgoBox =
+        Box::leak(Box::new(new_self));
+    ctx.self_box = new_self;
+
+    // Bind var 1 to `input` in the context extension.
+    let mut ext = ContextExtension::empty();
+    ext.values.insert(1u8, input);
+    let ext: &'static ContextExtension = Box::leak(Box::new(ext));
+    ctx.extension = ext;
+    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
+
+    ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
+    ctx.pre_header.version = activated_version + 1;
+    Ok(ctx)
+}
+
 /// Make tree bytes leniently parseable. sigma-rust's `ErgoTree::sigma_parse` rejects
 /// a non-`SigmaProp` root on size-bit (v1+) trees (→ `Unparsed`/`RootTpeError`), but
 /// SANTA corpus roots are arbitrary-typed. Clearing the size bit and dropping the
@@ -154,9 +195,96 @@ pub fn run_entry(
     tree_bytes: &[u8],
     input: Option<&serde_json::Value>,
     inputs: Option<&Vec<serde_json::Value>>,
+    self_registers: Option<&serde_json::Map<String, serde_json::Value>>,
     tree_version: u8,
     activated_version: u8,
 ) -> Outcome {
+    // v4 (Box.getReg dynamic-index): SELF box has custom non-mandatory registers + var 1 = index.
+    // `self_registers` present ⇒ v4 entry — build SELF with registers and bind var 1.
+    // Must be checked before the v2 `input_constant` path (v4 also has `input`).
+    if let Some(reg_map) = self_registers {
+        // Decode var 1 input (the register-index selector).
+        let input_json = match input {
+            Some(j) => j,
+            None => return Outcome::Panicked { note: "v4 entry missing input".into() },
+        };
+        let var1 = match sval::decode_constant(input_json) {
+            Ok(c) => c,
+            Err(e) => return Outcome::Panicked { note: format!("v4 input decode: {:?}", e) },
+        };
+        // Decode selfRegisters: "4"-"9" → (NonMandatoryRegisterId, Constant), sorted by id.
+        let mut pairs: Vec<(NonMandatoryRegisterId, Constant)> = Vec::with_capacity(reg_map.len());
+        for (k, v) in reg_map {
+            let id: u8 = match k.parse() {
+                Ok(n) => n,
+                Err(_) => return Outcome::Panicked { note: format!("v4 selfRegisters: bad key {:?}", k) },
+            };
+            let reg_id = match id {
+                4 => NonMandatoryRegisterId::R4,
+                5 => NonMandatoryRegisterId::R5,
+                6 => NonMandatoryRegisterId::R6,
+                7 => NonMandatoryRegisterId::R7,
+                8 => NonMandatoryRegisterId::R8,
+                9 => NonMandatoryRegisterId::R9,
+                _ => return Outcome::Panicked { note: format!("v4 selfRegisters: key {} out of R4-R9 range", id) },
+            };
+            match sval::decode_constant(v) {
+                Ok(c) => pairs.push((reg_id, c)),
+                Err(e) => return Outcome::Panicked { note: format!("v4 selfRegisters[{}] decode: {:?}", k, e) },
+            }
+        }
+        // Sort by register id (R4 < R5 < … < R9) to ensure dense packing order.
+        pairs.sort_by_key(|(rid, _)| *rid as u8);
+
+        // Parse the tree before building context.
+        let lenient = lenient_tree_bytes(tree_bytes);
+        let tree = match ErgoTree::sigma_parse_bytes(&lenient) {
+            Ok(t) => t,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(feature = "jit-cost")]
+        let root = match tree.root_expr() {
+            Ok(r) => r,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(not(feature = "jit-cost"))]
+        let root_owned = match tree.proposition() {
+            Ok(r) => r,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(not(feature = "jit-cost"))]
+        let root = &root_owned;
+
+        let ctx = match build_context_v4(pairs, var1, tree_version, activated_version) {
+            Ok(c) => c,
+            Err(e) => return Outcome::Panicked { note: e },
+        };
+
+        #[cfg(feature = "jit-cost")]
+        let constants = match tree.constants() {
+            Ok(c) => c,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(feature = "jit-cost")]
+        let eval_ctx = ctx.with_constants(constants);
+        #[cfg(not(feature = "jit-cost"))]
+        let eval_ctx = ctx;
+
+        return match try_eval_with_deserialize::<Value<'static>>(root, &eval_ctx) {
+            Ok(v) => {
+                #[cfg(feature = "jit-cost")]
+                let cost = Some(eval_ctx.jit_cost_value());
+                #[cfg(not(feature = "jit-cost"))]
+                let cost = None;
+                match sval::encode_value(&v) {
+                    Ok(value) => Outcome::Success { value, cost },
+                    Err(e) => Outcome::Panicked { note: format!("result encode: {:?}", e) },
+                }
+            }
+            Err(_) => Outcome::Errored,
+        };
+    }
+
     // Decode the input. v2: a single SValue bound at ContextExtension var 1. A bridge failure
     // here (sigma-rust can't parse the input bytes, or SANTA can't construct the kind) is the
     // runner's own failure ⇒ recorded as `panicked` with the cause in `note`, never pre-classified.
