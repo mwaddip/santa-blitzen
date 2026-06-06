@@ -80,6 +80,7 @@ pub fn encode_stype(t: &SType) -> J {
         SType::SBox => json!({"tag": "SBox"}),
         SType::SHeader => json!({"tag": "SHeader"}),
         SType::SPreHeader => json!({"tag": "SPreHeader"}),
+        SType::SAvlTree => json!({"tag": "SAvlTree"}),
         SType::SColl(elem) => json!({"tag": "SColl", "elem": encode_stype(elem)}),
         SType::SOption(elem) => json!({"tag": "SOption", "elem": encode_stype(elem)}),
         SType::STuple(stuple) => {
@@ -109,8 +110,23 @@ pub fn decode_stype(j: &J) -> Result<SType, BridgeError> {
         "SBox" => SType::SBox,
         "SHeader" => SType::SHeader,
         "SPreHeader" => SType::SPreHeader,
+        "SAvlTree" => SType::SAvlTree,
         "SColl" => SType::SColl(Box::new(decode_stype(&j["elem"])?).into()),
         "SOption" => SType::SOption(Box::new(decode_stype(&j["elem"])?).into()),
+        "STuple" => {
+            use ergotree_ir::types::stuple::STuple;
+            let items_json = j["items"]
+                .as_array()
+                .ok_or_else(|| BridgeError::Decode(format!("STuple items not an array: {}", j)))?;
+            let items: Vec<SType> = items_json
+                .iter()
+                .map(decode_stype)
+                .collect::<Result<_, _>>()?;
+            SType::STuple(
+                STuple::try_from(items)
+                    .map_err(|e| BridgeError::Decode(format!("STuple arity: {:?}", e)))?,
+            )
+        }
         other => return Err(BridgeError::Decode(format!("unsupported SType tag: {}", other))),
     })
 }
@@ -451,5 +467,41 @@ mod tests {
         // AvlTree_properties_equivalence vector (entry #0 input).
         roundtrip(json!({"kind": "AvlTree",
             "bytes_hex": "000183807f66b301530120ff7fc6bd6601ff01ff7f7d2bedbbffff00187fe8909406010101"}));
+    }
+
+    #[test]
+    fn stype_tag_map_total_over_contract_s4() {
+        // Every leaf tag in runner-contract §4 maps to its EXACT string both ways
+        // (no Debug fallback on encode, no "unsupported" on decode).
+        let leaves = [
+            (SType::SBoolean, "SBoolean"),
+            (SType::SByte, "SByte"),
+            (SType::SShort, "SShort"),
+            (SType::SInt, "SInt"),
+            (SType::SLong, "SLong"),
+            (SType::SBigInt, "SBigInt"),
+            (SType::SUnsignedBigInt, "SUnsignedBigInt"),
+            (SType::SGroupElement, "SGroupElement"),
+            (SType::SSigmaProp, "SSigmaProp"),
+            (SType::SBox, "SBox"),
+            (SType::SHeader, "SHeader"),
+            (SType::SPreHeader, "SPreHeader"),
+            (SType::SAvlTree, "SAvlTree"),
+            (SType::SUnit, "SUnit"),
+            (SType::SAny, "SAny"),
+        ];
+        for (t, tag) in leaves {
+            assert_eq!(encode_stype(&t), json!({"tag": tag}), "encode {}", tag);
+            assert_eq!(decode_stype(&json!({"tag": tag})).expect(tag), t, "decode {}", tag);
+        }
+        // Recursive forms round-trip (incl. STuple, previously missing from decode).
+        for j in [
+            json!({"tag": "SColl", "elem": {"tag": "SAvlTree"}}),
+            json!({"tag": "SOption", "elem": {"tag": "SAvlTree"}}),
+            json!({"tag": "STuple", "items": [{"tag": "SInt"}, {"tag": "SAvlTree"}]}),
+        ] {
+            let t = decode_stype(&j).expect("recursive decode");
+            assert_eq!(encode_stype(&t), j, "recursive round-trip");
+        }
     }
 }
