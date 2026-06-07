@@ -93,6 +93,28 @@ fn arbitrary_context() -> Context<'static> {
         .current()
 }
 
+/// Pin the contract's canonical eval context (runner-contract.md Â§2) onto a template
+/// clone. The corpus reads context surfaces (CONTEXT.* / preHeader.*), so these fields
+/// are load-bearing: preHeader{version = activated+1 (block-version convention â script
+/// activation derives from it here), parentId/votes zeroed at wire widths, timestamp 3,
+/// nBits 0, height 0, minerPk = generator}, HEIGHT 0, dataInputs empty. `headers` keeps
+/// the template's value: sigma-rust's `[Header; 10]` cannot express the pinned EMPTY
+/// headers â CONTEXT.headers is a structural divergence by model, not a wiring gap.
+/// SELF/outputs keep template values (no committed vector reads them; the v4 arm
+/// rebuilds SELF's registers explicitly).
+fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
+    use ergo_chain_types::{ec_point, BlockId, Digest, Votes};
+    ctx.height = 0;
+    ctx.data_inputs = None;
+    ctx.pre_header.version = activated_version + 1;
+    ctx.pre_header.parent_id = BlockId(Digest::zero());
+    ctx.pre_header.timestamp = 3;
+    ctx.pre_header.n_bits = 0;
+    ctx.pre_header.height = 0;
+    ctx.pre_header.miner_pk = Box::new(ec_point::generator());
+    ctx.pre_header.votes = Votes([0u8; 3]);
+}
+
 /// Build a `Context<'static>` with `input` bound at ContextExtension var 1, at the
 /// entry's `(tree_version, activated_version)`. Cloned from the arbitrary template
 /// (impl-agnostic field set); the leaked extension is `'static` (short-lived process).
@@ -108,7 +130,7 @@ fn build_context(input: Option<Constant>, tree_version: u8, activated_version: u
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    ctx.pre_header.version = activated_version + 1;
+    pin_canonical_context(&mut ctx, activated_version);
     ctx
 }
 
@@ -125,7 +147,7 @@ fn build_context_v3(
     ctx.extension = empty;
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(input_extensions)));
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    ctx.pre_header.version = activated_version + 1;
+    pin_canonical_context(&mut ctx, activated_version);
     ctx
 }
 
@@ -164,7 +186,7 @@ fn build_context_v4(
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    ctx.pre_header.version = activated_version + 1;
+    pin_canonical_context(&mut ctx, activated_version);
     Ok(ctx)
 }
 
