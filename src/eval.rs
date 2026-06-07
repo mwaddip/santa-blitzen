@@ -117,7 +117,10 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     ctx.pre_header.votes = Votes([0u8; 3]);
     ctx.headers = ContextHeaders::from_vec(vec![]).expect("empty headers within bounds");
     ctx.last_block_utxo_root = AvlTreeData {
-        digest: Digest::zero(),
+        // 33 zero bytes — the contract's canonical stateRoot digest. The field went
+        // variable-length `Vec<u8>` in eni 3e27412b (updateDigest stores any-length
+        // Coll[Byte]); the canonical value is unchanged.
+        digest: vec![0u8; 33],
         tree_flags: AvlTreeFlags::new(true, true, true),
         key_length: 32,
         value_length_opt: None,

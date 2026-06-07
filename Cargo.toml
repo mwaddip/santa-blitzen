@@ -33,3 +33,11 @@ proptest = "1"
 # lazy-constants work (e.g. the eni branch). Default off ⇒ upstream-compatible:
 # evaluates values, emits no cost (lands in the costing-coal column).
 jit-cost = []
+
+# Build-identity declaration (runner-contract §3): this runner builds against the
+# mwaddip ergo_avltree_rust fork — the same override ergo-node-rust ships — instead
+# of the crates.io release, whose `.unwrap()`-heavy verifier panics on malformed
+# proofs / out-of-range params (the f4 degenerate findings). The fork's main returns
+# Err where upstream panics. Cargo.lock pins the resolved rev.
+[patch.crates-io]
+ergo_avltree_rust = { git = "https://github.com/mwaddip/ergo_avltree_rust.git", branch = "main" }
