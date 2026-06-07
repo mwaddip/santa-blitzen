@@ -31,6 +31,11 @@ pub enum BridgeError {
     Encode(String),
     /// Malformed SANTA JSON on the decode side.
     Decode(String),
+    /// The underlying library REFUSED structurally-valid input bytes — its own
+    /// parse/`try_from` verdict on oracle-blessed material (e.g. a Box value outside
+    /// the impl's bounds). The library speaking, not the bridge: runners surface this
+    /// as `errored` (a real divergence on an accept vector), never `panicked`.
+    Refused(String),
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -259,7 +264,7 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
         "GroupElement" => {
             use ergo_chain_types::EcPoint;
             let ge = EcPoint::sigma_parse_bytes(&hex_field("bytes_hex")?)
-                .map_err(|e| BridgeError::Decode(format!("GroupElement parse: {:?}", e)))?;
+                .map_err(|e| BridgeError::Refused(format!("GroupElement parse: {:?}", e)))?;
             lit(
                 SType::SGroupElement,
                 Literal::GroupElement(alloc_arc(ge)),
@@ -268,13 +273,13 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
         "Box" => {
             use ergotree_ir::chain::ergo_box::ErgoBox;
             let b = ErgoBox::sigma_parse_bytes(&hex_field("bytes_hex")?)
-                .map_err(|e| BridgeError::Decode(format!("Box parse: {:?}", e)))?;
+                .map_err(|e| BridgeError::Refused(format!("Box parse: {:?}", e)))?;
             lit(SType::SBox, Literal::CBox(ergotree_ir::reference::Ref::from(b)))
         }
         "AvlTree" => {
             use ergotree_ir::mir::avl_tree_data::AvlTreeData;
             let a = AvlTreeData::sigma_parse_bytes(&hex_field("bytes_hex")?)
-                .map_err(|e| BridgeError::Decode(format!("AvlTree parse: {:?}", e)))?;
+                .map_err(|e| BridgeError::Refused(format!("AvlTree parse: {:?}", e)))?;
             lit(SType::SAvlTree, Literal::AvlTree(Box::new(a)))
         }
         "Header" => {
@@ -283,7 +288,7 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
             use ergo_chain_types::Header;
             use sigma_ser::ScorexSerializable;
             let h = Header::scorex_parse_bytes(&hex_field("bytes_hex")?)
-                .map_err(|e| BridgeError::Decode(format!("Header parse: {:?}", e)))?;
+                .map_err(|e| BridgeError::Refused(format!("Header parse: {:?}", e)))?;
             lit(SType::SHeader, Literal::Header(Box::new(h)))
         }
         "Coll" => {
@@ -337,7 +342,7 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
             use ergotree_ir::sigma_protocol::sigma_boolean::{SigmaBoolean, SigmaProp};
             // Mirror of `encode_value`: `raw_hex` is the bare serialized `SigmaBoolean`.
             let sb = SigmaBoolean::sigma_parse_bytes(&hex_field("raw_hex")?)
-                .map_err(|e| BridgeError::Decode(format!("SigmaProp parse: {:?}", e)))?;
+                .map_err(|e| BridgeError::Refused(format!("SigmaProp parse: {:?}", e)))?;
             lit(
                 SType::SSigmaProp,
                 Literal::SigmaProp(Box::new(SigmaProp::new(sb))),
@@ -507,5 +512,18 @@ mod tests {
             let t = decode_stype(&j).expect("recursive decode");
             assert_eq!(encode_stype(&t), j, "recursive round-trip");
         }
+    }
+
+    /// The Refused/Decode boundary: bytes the LIBRARY parses-and-rejects classify
+    /// as `Refused` (its verdict -> runner `errored`); JSON the bridge cannot even
+    /// dispatch classifies as `Decode` (bridge failure -> runner `panicked`).
+    #[test]
+    fn refused_vs_decode_classification() {
+        // well-formed JSON, valid hex -- the library's Box parse refuses the bytes
+        let r = decode_constant(&json!({"kind": "Box", "bytes_hex": "00"}));
+        assert!(matches!(r, Err(BridgeError::Refused(_))), "got {:?}", r);
+        // unsupported kind never reaches the library -- bridge malformation
+        let d = decode_constant(&json!({"kind": "Nope", "value": 1}));
+        assert!(matches!(d, Err(BridgeError::Decode(_))), "got {:?}", d);
     }
 }
