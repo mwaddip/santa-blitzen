@@ -154,10 +154,14 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
         }
         Value::CBox(b) => json!({"kind": "Box", "bytes_hex": ser_bytes(&**b, "Box")?}),
         Value::AvlTree(a) => json!({"kind": "AvlTree", "bytes_hex": ser_bytes(&**a, "AvlTree")?}),
-        Value::Header(_) => {
-            return Err(BridgeError::Encode(
-                "Header SValue encoding not yet wired".to_string(),
-            ))
+        Value::Header(h) => {
+            // Mirror of the decode arm: Header rides Scorex serialization (not
+            // SigmaSerializable) — {kind:"Header", bytes_hex} like the JVM encoder.
+            use sigma_ser::ScorexSerializable;
+            let bytes = h
+                .scorex_serialize_bytes()
+                .map_err(|e| BridgeError::Encode(format!("Header serialize: {:?}", e)))?;
+            json!({"kind": "Header", "bytes_hex": hex_lower(&bytes)})
         }
         Value::Coll(coll) => encode_coll(coll)?,
         Value::Tup(items) => {
