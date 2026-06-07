@@ -212,6 +212,18 @@ fn lenient_tree_bytes(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Map an input-decode failure to its contract outcome: the library REFUSING the
+/// bytes (`BridgeError::Refused` — its parse/`try_from` verdict on oracle-blessed
+/// material) is `errored`, a real divergence on an accept vector; any other bridge
+/// failure (malformed SANTA JSON, unsupported kind) is the runner's own ⇒
+/// `panicked` with the cause in `note`.
+fn decode_failure_outcome(e: sval::BridgeError, site: &str) -> Outcome {
+    match e {
+        sval::BridgeError::Refused(_) => Outcome::Errored,
+        other => Outcome::Panicked { note: format!("{}: {:?}", site, other) },
+    }
+}
+
 /// Evaluate one entry. Produces exactly one [`Outcome`] (totality, contract §3).
 pub fn run_entry(
     tree_bytes: &[u8],
@@ -232,7 +244,7 @@ pub fn run_entry(
         };
         let var1 = match sval::decode_constant(input_json) {
             Ok(c) => c,
-            Err(e) => return Outcome::Panicked { note: format!("v4 input decode: {:?}", e) },
+            Err(e) => return decode_failure_outcome(e, "v4 input decode"),
         };
         // Decode selfRegisters: "4"-"9" → (NonMandatoryRegisterId, Constant), sorted by id.
         let mut pairs: Vec<(NonMandatoryRegisterId, Constant)> = Vec::with_capacity(reg_map.len());
@@ -252,7 +264,7 @@ pub fn run_entry(
             };
             match sval::decode_constant(v) {
                 Ok(c) => pairs.push((reg_id, c)),
-                Err(e) => return Outcome::Panicked { note: format!("v4 selfRegisters[{}] decode: {:?}", k, e) },
+                Err(e) => return decode_failure_outcome(e, &format!("v4 selfRegisters[{}] decode", k)),
             }
         }
         // Sort by register id (R4 < R5 < … < R9) to ensure dense packing order.
@@ -307,13 +319,14 @@ pub fn run_entry(
         };
     }
 
-    // Decode the input. v2: a single SValue bound at ContextExtension var 1. A bridge failure
-    // here (sigma-rust can't parse the input bytes, or SANTA can't construct the kind) is the
-    // runner's own failure ⇒ recorded as `panicked` with the cause in `note`, never pre-classified.
+    // Decode the input. v2: a single SValue bound at ContextExtension var 1. The library
+    // REFUSING the input bytes (try_from/parse — its verdict on oracle-blessed material)
+    // is a real divergence ⇒ `errored`; a SANTA-side bridge failure (malformed JSON,
+    // unsupported kind) is the runner's own ⇒ `panicked` with the cause in `note`.
     let input_constant = match input {
         Some(j) => match sval::decode_constant(j) {
             Ok(c) => Some(c),
-            Err(e) => return Outcome::Panicked { note: format!("input decode: {:?}", e) },
+            Err(e) => return decode_failure_outcome(e, "input decode"),
         },
         None => None,
     };
@@ -334,7 +347,7 @@ pub fn run_entry(
                             Ok(c) => {
                                 ext.values.insert(id, c);
                             }
-                            Err(e) => return Outcome::Panicked { note: format!("input decode (v3): {:?}", e) },
+                            Err(e) => return decode_failure_outcome(e, "input decode (v3)"),
                         }
                     }
                 }
@@ -399,5 +412,34 @@ pub fn run_entry(
             }
         }
         Err(_) => Outcome::Errored,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The decode-failure contract split: a library refusal is `errored` (the
+    /// impl's verdict on oracle-blessed input — a gradeable divergence); any
+    /// other bridge failure stays `panicked` with the site in the note.
+    #[test]
+    fn decode_failure_outcome_split() {
+        assert!(matches!(
+            decode_failure_outcome(sval::BridgeError::Refused("x".into()), "input decode"),
+            Outcome::Errored
+        ));
+        match decode_failure_outcome(sval::BridgeError::Decode("x".into()), "input decode") {
+            Outcome::Panicked { note } => assert!(note.starts_with("input decode:"), "note: {}", note),
+            other => panic!("expected Panicked, got {:?}", outcome_name(&other)),
+        }
+    }
+
+    fn outcome_name(o: &Outcome) -> &'static str {
+        match o {
+            Outcome::Success { .. } => "Success",
+            Outcome::Errored => "Errored",
+            Outcome::NotImplemented => "NotImplemented",
+            Outcome::Panicked { .. } => "Panicked",
+        }
     }
 }
