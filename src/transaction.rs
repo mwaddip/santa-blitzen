@@ -71,8 +71,9 @@ impl TxOutcome {
 /// zero parent/timestamp/nBits/votes, the group generator as miner key; launch-default
 /// parameters with `BlockVersion` pinned to match (the JVM updated the same key).
 ///
-/// The JVM oracle blessed with EMPTY last-headers; sigma-rust's `Headers` is a fixed
-/// `[Header; 10]`, so we pin 10 synthetic headers built from the same zeroed fields.
+/// The JVM oracle blessed with EMPTY last-headers; the SDK's `Headers` is a
+/// `BoundedVec<Header, 1, 10>` (signing always has a chain tip, so ≥1), and we keep
+/// pinning 10 synthetic headers built from the same zeroed fields — the blessed shape.
 /// They are unread by the captured corpus — a script touching `CONTEXT.headers` could
 /// not have blessed valid against the oracle's empty seq in the first place.
 fn state_context(height: u32, activated: u8) -> ErgoStateContext {
@@ -107,7 +108,8 @@ fn state_context(height: u32, activated: u8) -> ErgoStateContext {
         votes: Votes([0u8; 3]),
         unparsed_bytes: Box::new([]),
     };
-    let headers: Headers = std::array::from_fn(|_| header.clone());
+    #[allow(clippy::unwrap_used)] // 10 is within the 1..=10 bound
+    let headers: Headers = vec![header.clone(); 10].try_into().unwrap();
     let mut parameters = Parameters::default();
     parameters
         .parameters_table

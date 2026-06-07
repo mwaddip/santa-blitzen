@@ -93,17 +93,19 @@ fn arbitrary_context() -> Context<'static> {
         .current()
 }
 
-/// Pin the contract's canonical eval context (runner-contract.md Â§2) onto a template
+/// Pin the contract's canonical eval context (runner-contract.md §2) onto a template
 /// clone. The corpus reads context surfaces (CONTEXT.* / preHeader.*), so these fields
-/// are load-bearing: preHeader{version = activated+1 (block-version convention â script
+/// are load-bearing: preHeader{version = activated+1 (block-version convention — script
 /// activation derives from it here), parentId/votes zeroed at wire widths, timestamp 3,
-/// nBits 0, height 0, minerPk = generator}, HEIGHT 0, dataInputs empty. `headers` keeps
-/// the template's value: sigma-rust's `[Header; 10]` cannot express the pinned EMPTY
-/// headers â CONTEXT.headers is a structural divergence by model, not a wiring gap.
-/// SELF/outputs keep template values (no committed vector reads them; the v4 arm
-/// rebuilds SELF's registers explicitly).
+/// nBits 0, height 0, minerPk = generator}, HEIGHT 0, dataInputs empty, `headers` EMPTY
+/// (`ContextHeaders` expresses the pinned empty seq since the BoundedVec relaxation),
+/// `lastBlockUtxoRoot` = the contract's dummy AvlTree (zero digest, all ops allowed,
+/// keyLength 32, no value-length). SELF/outputs keep template values (no committed
+/// vector reads them; the v4 arm rebuilds SELF's registers explicitly).
 fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     use ergo_chain_types::{ec_point, BlockId, Digest, Votes};
+    use ergotree_ir::chain::context::ContextHeaders;
+    use ergotree_ir::mir::avl_tree_data::{AvlTreeData, AvlTreeFlags};
     ctx.height = 0;
     ctx.data_inputs = None;
     ctx.pre_header.version = activated_version + 1;
@@ -113,6 +115,13 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     ctx.pre_header.height = 0;
     ctx.pre_header.miner_pk = Box::new(ec_point::generator());
     ctx.pre_header.votes = Votes([0u8; 3]);
+    ctx.headers = ContextHeaders::from_vec(vec![]).expect("empty headers within bounds");
+    ctx.last_block_utxo_root = AvlTreeData {
+        digest: Digest::zero(),
+        tree_flags: AvlTreeFlags::new(true, true, true),
+        key_length: 32,
+        value_length_opt: None,
+    };
 }
 
 /// Build a `Context<'static>` with `input` bound at ContextExtension var 1, at the
