@@ -201,13 +201,14 @@ fn build_context_v4(
     Ok(ctx)
 }
 
-// Tree parsing is `ErgoTree::sigma_parse_bytes_lenient` — added to the sigma-rust
-// checkout at build time by patches/sigma-rust-lenient-parse.patch (see santa-run):
-// it accepts the arbitrary-typed (non-`SigmaProp`) roots the SANTA corpus carries,
-// while parsing the REAL header — so size-bit semantics (Rule-1012) are preserved,
-// unlike the retired byte-munging `lenient_tree_bytes` (which cleared the size bit
-// and with it the rule's trigger). Mirrors the blesser's
-// `deserializeErgoTree(checkType=false)`.
+// Tree parsing is `ErgoTree::sigma_parse_bytes_lenient`: it accepts the arbitrary-typed
+// (non-`SigmaProp`) roots the SANTA corpus carries while parsing the REAL header — so
+// size-bit semantics (Rule-1012) are preserved, unlike the retired byte-munging
+// `lenient_tree_bytes` (which cleared the size bit and with it the rule's trigger).
+// Mirrors the blesser's `deserializeErgoTree(checkType=false)`. Provenance differs by
+// branch: eni carries the helper natively (`arbitrary`-gated, 642041be); develop gets
+// it from patches/sigma-rust-lenient-parse.patch applied at build time (see santa-run)
+// until the helper + Rule-1012 PR merges upstream.
 
 /// Map an input-decode failure to its contract outcome: the library REFUSING the
 /// bytes (`BridgeError::Refused` — its parse/`try_from` verdict on oracle-blessed

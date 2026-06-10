@@ -24,19 +24,10 @@ if [ -z "${SANTA_MISE_ACTIVE:-}" ]; then
 fi
 impl="$(cd "$1" && pwd)"
 ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
-# Build-identity patch (runner-contract §3, declared in README + patches/):
-# sigma-rust exposes no lenient (non-SigmaProp-root) parse entry, so the build
-# applies patches/sigma-rust-lenient-parse.patch to the checkout — additive and
-# behavior-neutral (production sigma_parse/sigma_parse_bytes unchanged; adds
-# ErgoTree::sigma_parse_bytes_lenient, eval.rs's parse entry). Unlike the retired
-# byte-munging lenient_tree_bytes, it parses the REAL header, so size-bit
-# semantics (Rule-1012) are preserved. conform's checkout step is a plain
-# `git checkout` (no -f), so the tree MUST be pristine again afterwards: heal any
-# crashed previous run on entry, apply, and restore via the EXIT trap (the patch
-# touches one tracked file, adds none).
-restore() { git -C "$impl/sigma-rust" checkout -q -- .; }
-restore   # heal a crashed previous run before applying afresh
-git -C "$impl/sigma-rust" apply "$here/patches/sigma-rust-lenient-parse.patch"
-trap restore EXIT
+# No build patch on eni: the lenient parse entry (ErgoTree::sigma_parse_bytes_lenient,
+# eval.rs's parse entry) is carried natively by the eni branch behind the `arbitrary`
+# feature (642041be — the same gated conformance surface as try_eval_out). The develop
+# runner still applies patches/sigma-rust-lenient-parse.patch (see that branch) until
+# the helper + Rule-1012 PR merges upstream.
 cargo build --release --features jit-cost --manifest-path "$here/Cargo.toml" >/dev/null
 "$here/target/release/blitzen" emit "$2" "$3"
