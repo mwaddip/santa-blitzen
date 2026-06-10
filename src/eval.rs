@@ -26,7 +26,6 @@ use ergotree_ir::chain::ergo_box::NonMandatoryRegisters;
 use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
-use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_interpreter::eval::test_util::try_eval_with_deserialize;
 
 use crate::sval;
@@ -190,27 +189,13 @@ fn build_context_v4(
     Ok(ctx)
 }
 
-/// Make tree bytes leniently parseable. sigma-rust's `ErgoTree::sigma_parse` rejects
-/// a non-`SigmaProp` root on size-bit (v1+) trees (→ `Unparsed`/`RootTpeError`), but
-/// SANTA corpus roots are arbitrary-typed. Clearing the size bit and dropping the
-/// size VLQ routes parsing through the non-sized path, which has no root-type check
-/// (the blesser does the equivalent "lenient deserialize for non-SigmaProp roots").
-fn lenient_tree_bytes(bytes: &[u8]) -> Vec<u8> {
-    const HAS_SIZE: u8 = 0x08;
-    if bytes.is_empty() || bytes[0] & HAS_SIZE == 0 {
-        return bytes.to_vec();
-    }
-    // The size is a VLQ-u32 starting at index 1; skip it (continuation = high bit set).
-    let mut end = 1;
-    while end < bytes.len() && bytes[end] & 0x80 != 0 {
-        end += 1;
-    }
-    end += 1; // include the final VLQ byte (high bit clear)
-    let mut out = Vec::with_capacity(bytes.len().saturating_sub(end - 1));
-    out.push(bytes[0] & !HAS_SIZE);
-    out.extend_from_slice(bytes.get(end..).unwrap_or_default());
-    out
-}
+// Tree parsing is `ErgoTree::sigma_parse_bytes_lenient` — added to the sigma-rust
+// checkout at build time by patches/sigma-rust-lenient-parse.patch (see santa-run):
+// it accepts the arbitrary-typed (non-`SigmaProp`) roots the SANTA corpus carries,
+// while parsing the REAL header — so size-bit semantics (Rule-1012) are preserved,
+// unlike the retired byte-munging `lenient_tree_bytes` (which cleared the size bit
+// and with it the rule's trigger). Mirrors the blesser's
+// `deserializeErgoTree(checkType=false)`.
 
 /// Map an input-decode failure to its contract outcome: the library REFUSING the
 /// bytes (`BridgeError::Refused` — its parse/`try_from` verdict on oracle-blessed
@@ -270,9 +255,8 @@ pub fn run_entry(
         // Sort by register id (R4 < R5 < … < R9) to ensure dense packing order.
         pairs.sort_by_key(|(rid, _)| *rid as u8);
 
-        // Parse the tree before building context.
-        let lenient = lenient_tree_bytes(tree_bytes);
-        let tree = match ErgoTree::sigma_parse_bytes(&lenient) {
+        // Parse the tree before building context (lenient: build-patched entry, see above).
+        let tree = match ErgoTree::sigma_parse_bytes_lenient(tree_bytes) {
             Ok(t) => t,
             Err(_) => return Outcome::Errored,
         };
@@ -358,10 +342,10 @@ pub fn run_entry(
         None => None,
     };
 
-    // Parse the outer tree. A tree the JVM blessed but sigma-rust cannot parse is a
-    // real divergence surfaced as `errored` (it will mismatch a success `expected`).
-    let lenient = lenient_tree_bytes(tree_bytes);
-    let tree = match ErgoTree::sigma_parse_bytes(&lenient) {
+    // Parse the outer tree (lenient: build-patched entry, see above). A tree the JVM
+    // blessed but sigma-rust cannot parse is a real divergence surfaced as `errored`
+    // (it will mismatch a success `expected`).
+    let tree = match ErgoTree::sigma_parse_bytes_lenient(tree_bytes) {
         Ok(t) => t,
         Err(_) => return Outcome::Errored,
     };
