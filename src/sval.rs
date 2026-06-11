@@ -305,6 +305,21 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
                 .map_err(|e| BridgeError::Decode(format!("Coll build: {:?}", e)))?;
             lit(SType::SColl(Box::new(elem).into()), Literal::Coll(coll))
         }
+        // Compact byte-collection form (runner contract §2): value_hex, semantically
+        // identical to Coll/SByte per-item — exists for large byte payloads (the SBox
+        // token-window family carries >4KB box bytes as context input).
+        "Coll[Byte]" => {
+            let bytes = hex_field("value_hex")?;
+            let coll = CollKind::from_collection(
+                SType::SByte,
+                bytes.iter().map(|b| Literal::Byte(*b as i8)).collect::<Vec<_>>(),
+            )
+            .map_err(|e| BridgeError::Decode(format!("Coll[Byte] build: {:?}", e)))?;
+            lit(
+                SType::SColl(Box::new(SType::SByte).into()),
+                Literal::Coll(coll),
+            )
+        }
         "Tuple" => {
             let items_json = j["items"]
                 .as_array()
