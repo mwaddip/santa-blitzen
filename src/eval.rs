@@ -201,6 +201,25 @@ fn build_context_v4(
     Ok(ctx)
 }
 
+/// Build a `Context<'static>` for santa-eval/v5: the SELF box's top-level
+/// ContextExtension is the entry's `extension` map verbatim (keys 0..255). A key
+/// `>= 0x80` is left in place so sigma-rust's own context-construction guard
+/// decides (the JVM crashes on it) — the runner does not pre-filter the key domain.
+/// Mirrors the other builders' field set; the leaked extension is `'static`.
+fn build_context_v5(
+    extension: ContextExtension,
+    tree_version: u8,
+    activated_version: u8,
+) -> Context<'static> {
+    let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
+    let ext: &'static ContextExtension = Box::leak(Box::new(extension));
+    ctx.extension = ext;
+    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
+    ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
+    pin_canonical_context(&mut ctx, activated_version);
+    ctx
+}
+
 // Tree parsing is `ErgoTree::sigma_parse_bytes_lenient`: it accepts the arbitrary-typed
 // (non-`SigmaProp`) roots the SANTA corpus carries while parsing the REAL header — so
 // size-bit semantics (Rule-1012) are preserved, unlike the retired byte-munging
@@ -228,9 +247,76 @@ pub fn run_entry(
     input: Option<&serde_json::Value>,
     inputs: Option<&Vec<serde_json::Value>>,
     self_registers: Option<&serde_json::Map<String, serde_json::Value>>,
+    extension: Option<&serde_json::Map<String, serde_json::Value>>,
     tree_version: u8,
     activated_version: u8,
 ) -> Outcome {
+    // v5 (Context.extension_key_domain): the SELF box carries a TOP-LEVEL
+    // ContextExtension {key 0..255 -> SValue} (distinct from v3's per-input
+    // `inputs[].extension`). Build it verbatim — including any key >= 0x80 — and let
+    // sigma-rust decide: ContextExtension keys are a signed `Byte` JVM-side, so a key
+    // >= 0x80 crashes JVM context construction, and sigma-rust's matching guard
+    // surfaces as `errored` here (where the impl lacks the guard, the divergence
+    // surfaces as an accept). The runner does NOT pre-judge the key domain — that
+    // would mask an impl that wrongly accepts.
+    if let Some(ext_map) = extension {
+        let mut ext = ContextExtension::empty();
+        for (k, v) in ext_map {
+            let id: u8 = match k.parse() {
+                Ok(id) => id,
+                Err(_) => return Outcome::Errored,
+            };
+            match sval::decode_constant(v) {
+                Ok(c) => {
+                    ext.values.insert(id, c);
+                }
+                Err(e) => return decode_failure_outcome(e, "v5 extension decode"),
+            }
+        }
+
+        let tree = match ErgoTree::sigma_parse_bytes_lenient(tree_bytes) {
+            Ok(t) => t,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(feature = "jit-cost")]
+        let root = match tree.root_expr() {
+            Ok(r) => r,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(not(feature = "jit-cost"))]
+        let root_owned = match tree.proposition() {
+            Ok(r) => r,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(not(feature = "jit-cost"))]
+        let root = &root_owned;
+
+        let ctx = build_context_v5(ext, tree_version, activated_version);
+
+        #[cfg(feature = "jit-cost")]
+        let constants = match tree.constants() {
+            Ok(c) => c,
+            Err(_) => return Outcome::Errored,
+        };
+        #[cfg(feature = "jit-cost")]
+        let eval_ctx = ctx.with_constants(constants);
+        #[cfg(not(feature = "jit-cost"))]
+        let eval_ctx = ctx;
+
+        return match try_eval_with_deserialize::<Value<'static>>(root, &eval_ctx) {
+            Ok(v) => {
+                #[cfg(feature = "jit-cost")]
+                let cost = Some(eval_ctx.jit_cost_value());
+                #[cfg(not(feature = "jit-cost"))]
+                let cost = None;
+                match sval::encode_value(&v) {
+                    Ok(value) => Outcome::Success { value, cost },
+                    Err(e) => Outcome::Panicked { note: format!("result encode: {:?}", e) },
+                }
+            }
+            Err(_) => Outcome::Errored,
+        };
+    }
     // v4 (Box.getReg dynamic-index): SELF box has custom non-mandatory registers + var 1 = index.
     // `self_registers` present ⇒ v4 entry — build SELF with registers and bind var 1.
     // Must be checked before the v2 `input_constant` path (v4 also has `input`).
