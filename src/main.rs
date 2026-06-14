@@ -98,11 +98,22 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
     let is_tx = vector["schema"]
         .as_str()
         .is_some_and(|s| s.starts_with("santa-transaction/"));
+    // Full-context eval (santa-eval/v6-fullctx) is not yet wired in the blitzen adapter:
+    // the entry carries a top-level `context` object rather than the per-field inputs that
+    // the existing eval dispatch (v1–v5) expects. Return not-implemented so these entries
+    // grade as COVERAGE (roadmap ledger) rather than producing false divergences.
+    let is_v6_fullctx = vector["schema"]
+        .as_str()
+        .is_some_and(|s| s == "santa-eval/v6-fullctx");
     entries
         .iter()
         .map(|entry| {
             let name = entry["name"].as_str().unwrap_or("<unnamed>").to_string();
-            if is_wire {
+            if is_v6_fullctx {
+                let actual = eval::Outcome::NotImplemented.to_json();
+                let expected = entry["expected"].clone();
+                return (name, actual, expected);
+            } else if is_wire {
                 let kind = entry["kind"].as_str().expect("wire entry missing kind");
                 let bytes_hex = entry["bytes_hex"]
                     .as_str()
@@ -340,5 +351,39 @@ mod tests {
         if error == "errored" {
             assert!(actual.get("note").is_none(), "errored must not carry a note; got: {}", actual);
         }
+    }
+
+    /// santa-eval/v6-fullctx: every entry in a v6-fullctx vector must produce
+    /// `error: "not-implemented"` — the adapter arm is not yet wired, so the
+    /// dispatch must short-circuit BEFORE any eval attempt.
+    #[test]
+    fn v6_fullctx_returns_not_implemented() {
+        use crate::run_vector_file;
+        // Minimal synthetic v6-fullctx vector: one entry with a `context` field (no
+        // top-level input/inputs/selfRegisters/extension — that's the v6-fullctx shape).
+        let vector_json = r#"{
+            "schema": "santa-eval/v6-fullctx",
+            "entries": [
+                {
+                    "name": "test-not-implemented#0",
+                    "tree_bytes_hex": "0008cd",
+                    "context": {},
+                    "version": {"ergoTree": 0, "activated": 2},
+                    "expected": {"value": null, "cost": null, "error": "not-implemented"}
+                }
+            ]
+        }"#;
+        let path = std::path::Path::new("/tmp/blitzen-v6-fullctx-test.json");
+        std::fs::write(path, vector_json).expect("write test vector");
+        let results = run_vector_file(path);
+        assert_eq!(results.len(), 1, "expected one result");
+        let (_name, actual, _expected) = &results[0];
+        assert_eq!(
+            actual["error"], "not-implemented",
+            "v6-fullctx must return not-implemented, got: {}",
+            actual
+        );
+        assert_eq!(actual["value"], J::Null, "value must be null");
+        assert_eq!(actual["cost"], J::Null, "cost must be null");
     }
 }
