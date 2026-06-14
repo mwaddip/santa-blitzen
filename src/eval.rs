@@ -498,6 +498,258 @@ pub fn run_entry(
     }
 }
 
+/// Reconstruction failure for the v6-fullctx envelope, split by who failed (mirrors
+/// [`decode_failure_outcome`]): `Refused` = the library refusing oracle-blessed consensus
+/// material — a box/header/preHeader/minerPk it cannot parse, or an out-of-bounds
+/// collection — surfaced as `errored`, the divergence it is; `Malformed` = a defect in
+/// the SANTA envelope or this runner's consumption of it (missing/mistyped field, bad
+/// hex), surfaced as `panicked` with the cause in `note` (the runner's own failure).
+enum FullCtxError {
+    Refused(String),
+    Malformed(String),
+}
+
+/// Reconstruct a real `Context` from a `santa-eval/v6-fullctx` `context` envelope
+/// (runner-contract §2). Unlike the v1–v5 builders — which pin the canonical *dummy*
+/// context — this parses the envelope's real boxes/headers/preHeader and derives
+/// `last_block_utxo_root` from `headers[0].state_root`, so the script sees true
+/// blockchain state. Cloned from the impl-agnostic template (no struct literal), then
+/// every load-bearing field is overwritten; the leaked boxes/extensions are `'static`
+/// (short-lived process). Box ids are sigma-rust's own (re-serialized on parse), not the
+/// retained input bytes — for canonical boxes the two coincide.
+fn build_context_v6_fullctx(
+    context: &serde_json::Value,
+    tree_version: u8,
+) -> Result<Context<'static>, FullCtxError> {
+    use ergo_chain_types::{BlockId, Digest, EcPoint, Header, PreHeader, Votes};
+    use ergotree_ir::chain::context::{ContextHeaders, TxIoVec};
+    use ergotree_ir::chain::ergo_box::ErgoBox;
+    use ergotree_ir::mir::avl_tree_data::{AvlTreeData, AvlTreeFlags};
+    use ergotree_ir::serialization::SigmaSerializable;
+    use sigma_ser::ScorexSerializable;
+
+    let obj = context
+        .as_object()
+        .ok_or_else(|| FullCtxError::Malformed("context not an object".into()))?;
+
+    // Parse a hex-array box field (`inputs` / `data_inputs` / `outputs`). A sigma-rust
+    // parse refusal of oracle-blessed bytes is `Refused` (errored); a shape/hex defect
+    // is `Malformed` (panicked).
+    let parse_boxes = |key: &str| -> Result<Vec<ErgoBox>, FullCtxError> {
+        let arr = obj
+            .get(key)
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| FullCtxError::Malformed(format!("context.{key} missing or not an array")))?;
+        let mut out = Vec::with_capacity(arr.len());
+        for (i, item) in arr.iter().enumerate() {
+            let h = item
+                .as_str()
+                .ok_or_else(|| FullCtxError::Malformed(format!("context.{key}[{i}] not a string")))?;
+            let bytes = crate::hex_to_bytes(h)
+                .map_err(|_| FullCtxError::Malformed(format!("context.{key}[{i}] bad hex")))?;
+            let b = ErgoBox::sigma_parse_bytes(&bytes)
+                .map_err(|e| FullCtxError::Refused(format!("context.{key}[{i}]: {e:?}")))?;
+            out.push(b);
+        }
+        Ok(out)
+    };
+
+    let inputs_vec = parse_boxes("inputs")?;
+    let data_inputs_vec = parse_boxes("data_inputs")?;
+    let outputs_vec = parse_boxes("outputs")?;
+
+    // Headers (descending, newest first; up to 10 — fewer near genesis).
+    let headers_arr = obj
+        .get("headers")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| FullCtxError::Malformed("context.headers missing or not an array".into()))?;
+    let mut headers_vec: Vec<Header> = Vec::with_capacity(headers_arr.len());
+    for (i, item) in headers_arr.iter().enumerate() {
+        let h = item
+            .as_str()
+            .ok_or_else(|| FullCtxError::Malformed(format!("context.headers[{i}] not a string")))?;
+        let bytes = crate::hex_to_bytes(h)
+            .map_err(|_| FullCtxError::Malformed(format!("context.headers[{i}] bad hex")))?;
+        headers_vec.push(
+            Header::scorex_parse_bytes(&bytes)
+                .map_err(|e| FullCtxError::Refused(format!("context.headers[{i}]: {e:?}")))?,
+        );
+    }
+
+    // PreHeader: decode the bespoke LEB128 sub-encoding, parse minerPk (SEC1), map to
+    // the sigma-rust type. The real block version from the envelope is used directly —
+    // the v1–v5 `activated + 1` dummy pin is NOT applied on this path (contract §2).
+    let ph_hex = obj
+        .get("pre_header_hex")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| FullCtxError::Malformed("context.pre_header_hex missing".into()))?;
+    let ph_bytes = crate::hex_to_bytes(ph_hex)
+        .map_err(|_| FullCtxError::Malformed("context.pre_header_hex bad hex".into()))?;
+    let phf = crate::preheader::decode(&ph_bytes)
+        .map_err(|e| FullCtxError::Refused(format!("pre_header decode: {e}")))?;
+    let miner_pk = EcPoint::scorex_parse_bytes(&phf.miner_pk)
+        .map_err(|e| FullCtxError::Refused(format!("minerPk parse: {e:?}")))?;
+    let pre_header = PreHeader {
+        version: phf.version,
+        parent_id: BlockId(Digest::<32>::from(phf.parent_id)),
+        timestamp: phf.timestamp,
+        n_bits: phf.n_bits,
+        height: phf.height,
+        miner_pk: Box::new(miner_pk),
+        votes: Votes(phf.votes),
+    };
+
+    let height = obj
+        .get("height")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| FullCtxError::Malformed("context.height missing or not a number".into()))?
+        as u32;
+    let self_index = obj
+        .get("self_index")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| FullCtxError::Malformed("context.self_index missing or not a number".into()))?
+        as usize;
+
+    // last_block_utxo_root: an explicit `last_block_utxo_root_hex` digest overrides the
+    // derivation; otherwise digest = headers[0].state_root (33B), flags 0x07, keyLen 32.
+    let digest: Vec<u8> = if let Some(hex) = obj.get("last_block_utxo_root_hex").and_then(|v| v.as_str()) {
+        crate::hex_to_bytes(hex)
+            .map_err(|_| FullCtxError::Malformed("context.last_block_utxo_root_hex bad hex".into()))?
+    } else {
+        headers_vec
+            .first()
+            .map(|h| h.state_root.0.to_vec())
+            .ok_or_else(|| FullCtxError::Malformed("no headers and no last_block_utxo_root_hex".into()))?
+    };
+    let last_block_utxo_root = AvlTreeData {
+        digest,
+        tree_flags: AvlTreeFlags::new(true, true, true),
+        key_length: 32,
+        value_length_opt: None,
+    };
+
+    // Per-input ContextExtensions (getVarFromInput by index). The SELF input's extension
+    // is also the top-level `ctx.extension`; the provider serves every input by index.
+    let mut input_extensions: Vec<ContextExtension> = Vec::new();
+    if let Some(arr) = obj.get("input_extensions").and_then(|v| v.as_array()) {
+        for (i, item) in arr.iter().enumerate() {
+            let mut ext = ContextExtension::empty();
+            if let Some(map) = item.as_object() {
+                for (k, v) in map {
+                    let id: u8 = k
+                        .parse()
+                        .map_err(|_| FullCtxError::Malformed(format!("input_extensions[{i}] bad key {k:?}")))?;
+                    let c = sval::decode_constant(v).map_err(|e| match e {
+                        sval::BridgeError::Refused(m) => {
+                            FullCtxError::Refused(format!("input_extensions[{i}][{k}]: {m}"))
+                        }
+                        other => FullCtxError::Malformed(format!("input_extensions[{i}][{k}]: {other:?}")),
+                    })?;
+                    ext.values.insert(id, c);
+                }
+            }
+            input_extensions.push(ext);
+        }
+    }
+
+    // Assemble onto the impl-agnostic template shell, overwriting every read field.
+    let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
+    let inputs_leaked: &'static [ErgoBox] = Box::leak(inputs_vec.into_boxed_slice());
+    let outputs_leaked: &'static [ErgoBox] = Box::leak(outputs_vec.into_boxed_slice());
+    let self_box: &'static ErgoBox = inputs_leaked.get(self_index).ok_or_else(|| {
+        FullCtxError::Malformed(format!(
+            "self_index {self_index} out of range ({} inputs)",
+            inputs_leaked.len()
+        ))
+    })?;
+    ctx.self_box = self_box;
+    ctx.outputs = outputs_leaked;
+    ctx.inputs = TxIoVec::from_vec(inputs_leaked.iter().collect())
+        .map_err(|e| FullCtxError::Refused(format!("inputs bounds: {e:?}")))?;
+    ctx.data_inputs = if data_inputs_vec.is_empty() {
+        None
+    } else {
+        let di_leaked: &'static [ErgoBox] = Box::leak(data_inputs_vec.into_boxed_slice());
+        Some(
+            TxIoVec::from_vec(di_leaked.iter().collect())
+                .map_err(|e| FullCtxError::Refused(format!("data_inputs bounds: {e:?}")))?,
+        )
+    };
+    ctx.pre_header = pre_header;
+    ctx.last_block_utxo_root = last_block_utxo_root;
+    ctx.headers = ContextHeaders::from_vec(headers_vec)
+        .map_err(|e| FullCtxError::Refused(format!("headers bounds: {e:?}")))?;
+    ctx.height = height;
+    let self_ext = input_extensions
+        .get(self_index)
+        .cloned()
+        .unwrap_or_else(ContextExtension::empty);
+    ctx.extension = Box::leak(Box::new(self_ext));
+    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(input_extensions)));
+    ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
+    ctx.jit_cost_limit = None;
+    ctx.reset_jit_cost();
+    Ok(ctx)
+}
+
+/// Evaluate one `santa-eval/v6-fullctx` entry: reconstruct the real context from the
+/// envelope, then evaluate the tree exactly as the v1–v5 paths do (lenient parse; lazy
+/// constants under `jit-cost`). Totality (contract §3) — produces exactly one `Outcome`.
+pub fn run_entry_fullctx(tree_bytes: &[u8], context: &serde_json::Value, tree_version: u8) -> Outcome {
+    let ctx = match build_context_v6_fullctx(context, tree_version) {
+        Ok(c) => c,
+        Err(FullCtxError::Refused(reason)) => {
+            // The library refused oracle-blessed material (a box/header/preHeader it
+            // cannot parse) — a real divergence, graded `errored` (which carries no note
+            // in the actuals, contract §3); the reason goes to stderr for diagnosis only.
+            eprintln!("blitzen: v6-fullctx reconstruction refused: {reason}");
+            return Outcome::Errored;
+        }
+        Err(FullCtxError::Malformed(note)) => return Outcome::Panicked { note },
+    };
+
+    let tree = match ErgoTree::sigma_parse_bytes_lenient(tree_bytes) {
+        Ok(t) => t,
+        Err(_) => return Outcome::Errored,
+    };
+    #[cfg(feature = "jit-cost")]
+    let root = match tree.root_expr() {
+        Ok(r) => r,
+        Err(_) => return Outcome::Errored,
+    };
+    #[cfg(not(feature = "jit-cost"))]
+    let root_owned = match tree.proposition() {
+        Ok(r) => r,
+        Err(_) => return Outcome::Errored,
+    };
+    #[cfg(not(feature = "jit-cost"))]
+    let root = &root_owned;
+
+    #[cfg(feature = "jit-cost")]
+    let constants = match tree.constants() {
+        Ok(c) => c,
+        Err(_) => return Outcome::Errored,
+    };
+    #[cfg(feature = "jit-cost")]
+    let eval_ctx = ctx.with_constants(constants);
+    #[cfg(not(feature = "jit-cost"))]
+    let eval_ctx = ctx;
+
+    match try_eval_with_deserialize::<Value<'static>>(root, &eval_ctx) {
+        Ok(v) => {
+            #[cfg(feature = "jit-cost")]
+            let cost = Some(eval_ctx.jit_cost_value());
+            #[cfg(not(feature = "jit-cost"))]
+            let cost = None;
+            match sval::encode_value(&v) {
+                Ok(value) => Outcome::Success { value, cost },
+                Err(e) => Outcome::Panicked { note: format!("result encode: {e:?}") },
+            }
+        }
+        Err(_) => Outcome::Errored,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
