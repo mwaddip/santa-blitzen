@@ -4,5 +4,5 @@
   "version": "v6",
   "tiers": ["eval", "wire", "transaction"],
   "cost": true,
-  "impl": "https://github.com/mwaddip/sigma-rust.git#ergo-node-integration"
+  "impl": "https://github.com/mwaddip/sigma-rust.git#eni"
 }
