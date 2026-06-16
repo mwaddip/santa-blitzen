@@ -121,7 +121,7 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                     eval::run_entry_fullctx(&tree_bytes, context, tree_v).to_json()
                 }));
                 let expected = entry["expected"].clone();
-                return (name, actual, expected);
+                (name, actual, expected)
             } else if is_wire {
                 let kind = entry["kind"].as_str().expect("wire entry missing kind");
                 let bytes_hex = entry["bytes_hex"]

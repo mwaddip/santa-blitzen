@@ -112,7 +112,7 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     ctx.pre_header.timestamp = 3;
     ctx.pre_header.n_bits = 0;
     ctx.pre_header.height = 0;
-    ctx.pre_header.miner_pk = Box::new(ec_point::generator());
+    *ctx.pre_header.miner_pk = ec_point::generator();
     ctx.pre_header.votes = Votes([0u8; 3]);
     ctx.headers = ContextHeaders::from_vec(vec![]).expect("empty headers within bounds");
     ctx.last_block_utxo_root = AvlTreeData {
