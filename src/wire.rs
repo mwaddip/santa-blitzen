@@ -6,6 +6,7 @@
 
 use ergo_lib::chain::transaction::Transaction;
 use ergotree_ir::chain::ergo_box::ErgoBox;
+use ergotree_ir::ergo_tree::ErgoTree;
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_ir::sigma_protocol::sigma_boolean::SigmaBoolean;
@@ -48,6 +49,22 @@ fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
     }
 }
 
+/// ErgoTree round-trip. Unlike the generic `roundtrip`, this uses `sigma_parse_bytes_lenient` — the
+/// arbitrary-root parse (the analog of the JVM's `checkType=false` `LenientErgoTree`). Our wire
+/// vectors carry Int-rooted trees (a type-var-name witness), which the SigmaProp-strict
+/// `sigma_parse_bytes` keeps as cached template bytes (an echo of the input) instead of re-encoding.
+/// Lenient fully parses to structure, so reserialize re-encodes the type/name — the structural
+/// round-trip the ErgoTree wire kind requires (docs/contract/runner-contract-wire.md §5).
+fn roundtrip_ergotree(bytes: &[u8]) -> WireOutcome {
+    match ErgoTree::sigma_parse_bytes_lenient(bytes) {
+        Ok(tree) => match tree.sigma_serialize_bytes() {
+            Ok(out) => WireOutcome::RoundTrip { bytes_hex: bytes_to_hex(&out) },
+            Err(_) => WireOutcome::Errored,
+        },
+        Err(_) => WireOutcome::Errored,
+    }
+}
+
 /// Round-trip one wire entry. `kind` selects the serializer. Header isn't wired here — it parses
 /// via ScorexSerializable, not SigmaSerializable → not-implemented.
 pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
@@ -60,6 +77,7 @@ pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
         "Constant" => roundtrip::<Constant>(&bytes),
         "SigmaBoolean" => roundtrip::<SigmaBoolean>(&bytes),
         "Transaction" => roundtrip::<Transaction>(&bytes),
+        "ErgoTree" => roundtrip_ergotree(&bytes),
         _ => WireOutcome::NotImplemented,
     }
 }
@@ -118,5 +136,17 @@ mod tests {
         let j = run_entry("Header", "00").to_json();
         assert_eq!(j["error"], "not-implemented");
         assert_eq!(j["bytes_hex"], J::Null);
+    }
+
+    #[test]
+    fn ergotree_lenient_roundtrip_matches_jvm_canonical() {
+        // eda080: a UTF-16-surrogate STypeVar name. eni matches the JVM's 1-FFFD collapse, so the
+        // lenient (structural) round-trip yields the JVM-canonical efbfbd form — NOT the input
+        // (echo) and NOT 3-FFFD. From vectors/wire/v6/authored/STypeVar.name_utf8_roundtrip.json.
+        let input    = "1b1901040ad801d701016703eda080d901026703eda08072027300";
+        let expected = "1b1901040ad801d701016703efbfbdd901026703efbfbd72027300";
+        let j = run_entry("ErgoTree", input).to_json();
+        assert_eq!(j["error"], J::Null);
+        assert_eq!(j["bytes_hex"], expected);
     }
 }
