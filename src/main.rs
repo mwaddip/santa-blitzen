@@ -62,7 +62,10 @@ fn caught_actual<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
         Ok(j) => j,
         Err(p) => {
             let note = panic_note(p);
-            eval::Outcome::Panicked { note: format!("panic: {note}") }.to_json()
+            eval::Outcome::Panicked {
+                note: format!("panic: {note}"),
+            }
+            .to_json()
         }
     }
 }
@@ -74,7 +77,10 @@ fn caught_actual_tx<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
         Ok(j) => j,
         Err(p) => {
             let note = panic_note(p);
-            transaction::TxOutcome::Panicked { note: format!("panic: {note}") }.to_json()
+            transaction::TxOutcome::Panicked {
+                note: format!("panic: {note}"),
+            }
+            .to_json()
         }
     }
 }
@@ -303,7 +309,9 @@ mod tests {
     fn caught_actual_tx_turns_a_panic_into_a_tx_shaped_panicked() {
         // The tx net's panic shape carries `valid` (santa-transaction.actuals), not
         // eval's `value` — a value-shaped panic would fail the tx actuals schema.
-        let j = caught_actual_tx(std::panic::AssertUnwindSafe(|| -> J { panic!("tx kaboom") }));
+        let j = caught_actual_tx(std::panic::AssertUnwindSafe(|| -> J {
+            panic!("tx kaboom")
+        }));
         assert_eq!(j["error"], "panicked");
         assert_eq!(j["valid"], J::Null);
         assert_eq!(j["cost"], J::Null);
@@ -348,7 +356,8 @@ mod tests {
             None,
             3,
             3,
-        ).to_json();
+        )
+        .to_json();
         // Harness-shape: a real verdict — either a value (error null) or errored — never panicked.
         let error = &actual["error"];
         assert!(
@@ -358,7 +367,11 @@ mod tests {
         );
         // If errored, no `note` (panicked carries a note; errored must not).
         if error == "errored" {
-            assert!(actual.get("note").is_none(), "errored must not carry a note; got: {}", actual);
+            assert!(
+                actual.get("note").is_none(),
+                "errored must not carry a note; got: {}",
+                actual
+            );
         }
     }
 
@@ -378,6 +391,9 @@ mod tests {
         let results = run_vector_file(path);
         assert_eq!(results.len(), 1, "expected one result");
         let (_name, actual, expected) = &results[0];
-        assert_eq!(actual, expected, "h111927 actual must match blessed expected");
+        assert_eq!(
+            actual, expected,
+            "h111927 actual must match blessed expected"
+        );
     }
 }

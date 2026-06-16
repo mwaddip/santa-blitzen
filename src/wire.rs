@@ -42,7 +42,9 @@ impl WireOutcome {
 fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
     match T::sigma_parse_bytes(bytes) {
         Ok(obj) => match obj.sigma_serialize_bytes() {
-            Ok(out) => WireOutcome::RoundTrip { bytes_hex: bytes_to_hex(&out) },
+            Ok(out) => WireOutcome::RoundTrip {
+                bytes_hex: bytes_to_hex(&out),
+            },
             Err(_) => WireOutcome::Errored,
         },
         Err(_) => WireOutcome::Errored,
@@ -58,7 +60,9 @@ fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
 fn roundtrip_ergotree(bytes: &[u8]) -> WireOutcome {
     match ErgoTree::sigma_parse_bytes_lenient(bytes) {
         Ok(tree) => match tree.sigma_serialize_bytes() {
-            Ok(out) => WireOutcome::RoundTrip { bytes_hex: bytes_to_hex(&out) },
+            Ok(out) => WireOutcome::RoundTrip {
+                bytes_hex: bytes_to_hex(&out),
+            },
             Err(_) => WireOutcome::Errored,
         },
         Err(_) => WireOutcome::Errored,
@@ -70,7 +74,11 @@ fn roundtrip_ergotree(bytes: &[u8]) -> WireOutcome {
 pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
     let bytes = match crate::hex_to_bytes(bytes_hex) {
         Ok(b) => b,
-        Err(e) => return WireOutcome::Panicked { note: format!("bad bytes_hex: {e}") },
+        Err(e) => {
+            return WireOutcome::Panicked {
+                note: format!("bad bytes_hex: {e}"),
+            }
+        }
     };
     match kind {
         "Box" => roundtrip::<ErgoBox>(&bytes),
@@ -143,7 +151,7 @@ mod tests {
         // eda080: a UTF-16-surrogate STypeVar name. eni matches the JVM's 1-FFFD collapse, so the
         // lenient (structural) round-trip yields the JVM-canonical efbfbd form — NOT the input
         // (echo) and NOT 3-FFFD. From vectors/wire/v6/authored/STypeVar.name_utf8_roundtrip.json.
-        let input    = "1b1901040ad801d701016703eda080d901026703eda08072027300";
+        let input = "1b1901040ad801d701016703eda080d901026703eda08072027300";
         let expected = "1b1901040ad801d701016703efbfbdd901026703efbfbd72027300";
         let j = run_entry("ErgoTree", input).to_json();
         assert_eq!(j["error"], J::Null);

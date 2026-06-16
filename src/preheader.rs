@@ -59,7 +59,10 @@ fn read_vlq_u(bytes: &[u8], offset: usize) -> Result<(u64, usize), String> {
 pub fn decode(bytes: &[u8]) -> Result<PreHeaderFields, String> {
     // version(1) + parentId(32)
     if bytes.len() < 33 {
-        return Err(format!("pre_header truncated before parentId: {} bytes", bytes.len()));
+        return Err(format!(
+            "pre_header truncated before parentId: {} bytes",
+            bytes.len()
+        ));
     }
     let version = bytes[0];
     let mut parent_id = [0u8; 32];
@@ -118,7 +121,10 @@ mod tests {
         );
         let f = decode(&bytes).expect("decode h111927 pre_header");
         assert_eq!(f.version, 4, "block version");
-        assert_eq!(f.height, 111927, "preHeader height == captured block height");
+        assert_eq!(
+            f.height, 111927,
+            "preHeader height == captured block height"
+        );
         assert_eq!(f.votes, [0u8, 0, 0], "votes");
         assert_eq!(
             hex(&f.parent_id),
