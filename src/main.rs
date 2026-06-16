@@ -112,7 +112,7 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
             if is_v6_fullctx {
                 let actual = eval::Outcome::NotImplemented.to_json();
                 let expected = entry["expected"].clone();
-                return (name, actual, expected);
+                (name, actual, expected)
             } else if is_wire {
                 let kind = entry["kind"].as_str().expect("wire entry missing kind");
                 let bytes_hex = entry["bytes_hex"]
