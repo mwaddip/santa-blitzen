@@ -41,7 +41,9 @@ impl WireOutcome {
 fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
     match T::sigma_parse_bytes(bytes) {
         Ok(obj) => match obj.sigma_serialize_bytes() {
-            Ok(out) => WireOutcome::RoundTrip { bytes_hex: bytes_to_hex(&out) },
+            Ok(out) => WireOutcome::RoundTrip {
+                bytes_hex: bytes_to_hex(&out),
+            },
             Err(_) => WireOutcome::Errored,
         },
         Err(_) => WireOutcome::Errored,
@@ -53,7 +55,11 @@ fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
 pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
     let bytes = match crate::hex_to_bytes(bytes_hex) {
         Ok(b) => b,
-        Err(e) => return WireOutcome::Panicked { note: format!("bad bytes_hex: {e}") },
+        Err(e) => {
+            return WireOutcome::Panicked {
+                note: format!("bad bytes_hex: {e}"),
+            }
+        }
     };
     match kind {
         "Box" => roundtrip::<ErgoBox>(&bytes),

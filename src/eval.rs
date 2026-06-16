@@ -18,6 +18,7 @@
 //! evals on the passed ctx via `try_eval_out` (so JIT-cost capture is unchanged; a
 //! substitution failure surfaces as `errored`). The `arbitrary` feature's public path.
 
+use ergotree_interpreter::eval::test_util::try_eval_with_deserialize;
 use ergotree_ir::chain::context::arbitrary::DummyContextExtensionProvider;
 use ergotree_ir::chain::context::Context;
 use ergotree_ir::chain::context_extension::ContextExtension;
@@ -26,7 +27,6 @@ use ergotree_ir::chain::ergo_box::NonMandatoryRegisters;
 use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
-use ergotree_interpreter::eval::test_util::try_eval_with_deserialize;
 
 use crate::sval;
 
@@ -48,7 +48,9 @@ pub enum Outcome {
     /// net, OR a SANTA-bridge failure (input decode / result encode) that `run_entry` records
     /// directly. Never-panic, contract §3: always coal, message in `note`. The runner reports the
     /// real failure rather than pre-classifying it into a softer "excuse" outcome.
-    Panicked { note: String },
+    Panicked {
+        note: String,
+    },
 }
 
 impl Outcome {
@@ -117,7 +119,11 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
 /// Build a `Context<'static>` with `input` bound at ContextExtension var 1, at the
 /// entry's `(tree_version, activated_version)`. Cloned from the arbitrary template
 /// (impl-agnostic field set); the leaked extension is `'static` (short-lived process).
-fn build_context(input: Option<Constant>, tree_version: u8, activated_version: u8) -> Context<'static> {
+fn build_context(
+    input: Option<Constant>,
+    tree_version: u8,
+    activated_version: u8,
+) -> Context<'static> {
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
     let mut ext = ContextExtension::empty();
@@ -167,14 +173,13 @@ fn build_context_v4(
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
     // Build NonMandatoryRegisters (densely packed from R4 upwards).
-    let regs = NonMandatoryRegisters::new(self_registers)
-        .map_err(|e| format!("selfRegisters: {}", e))?;
+    let regs =
+        NonMandatoryRegisters::new(self_registers).map_err(|e| format!("selfRegisters: {}", e))?;
 
     // Replace the SELF box registers: clone the template's self_box, apply registers.
     let new_self: ergotree_ir::chain::ergo_box::ErgoBox =
         ctx.self_box.clone().with_additional_registers(regs);
-    let new_self: &'static ergotree_ir::chain::ergo_box::ErgoBox =
-        Box::leak(Box::new(new_self));
+    let new_self: &'static ergotree_ir::chain::ergo_box::ErgoBox = Box::leak(Box::new(new_self));
     ctx.self_box = new_self;
 
     // Bind var 1 to `input` in the context extension.
@@ -225,7 +230,9 @@ fn build_context_v5(
 fn decode_failure_outcome(e: sval::BridgeError, site: &str) -> Outcome {
     match e {
         sval::BridgeError::Refused(_) => Outcome::Errored,
-        other => Outcome::Panicked { note: format!("{}: {:?}", site, other) },
+        other => Outcome::Panicked {
+            note: format!("{}: {:?}", site, other),
+        },
     }
 }
 
@@ -299,7 +306,9 @@ pub fn run_entry(
                 let cost = None;
                 match sval::encode_value(&v) {
                     Ok(value) => Outcome::Success { value, cost },
-                    Err(e) => Outcome::Panicked { note: format!("result encode: {:?}", e) },
+                    Err(e) => Outcome::Panicked {
+                        note: format!("result encode: {:?}", e),
+                    },
                 }
             }
             Err(_) => Outcome::Errored,
@@ -312,7 +321,11 @@ pub fn run_entry(
         // Decode var 1 input (the register-index selector).
         let input_json = match input {
             Some(j) => j,
-            None => return Outcome::Panicked { note: "v4 entry missing input".into() },
+            None => {
+                return Outcome::Panicked {
+                    note: "v4 entry missing input".into(),
+                }
+            }
         };
         let var1 = match sval::decode_constant(input_json) {
             Ok(c) => c,
@@ -323,7 +336,11 @@ pub fn run_entry(
         for (k, v) in reg_map {
             let id: u8 = match k.parse() {
                 Ok(n) => n,
-                Err(_) => return Outcome::Panicked { note: format!("v4 selfRegisters: bad key {:?}", k) },
+                Err(_) => {
+                    return Outcome::Panicked {
+                        note: format!("v4 selfRegisters: bad key {:?}", k),
+                    }
+                }
             };
             let reg_id = match id {
                 4 => NonMandatoryRegisterId::R4,
@@ -332,11 +349,17 @@ pub fn run_entry(
                 7 => NonMandatoryRegisterId::R7,
                 8 => NonMandatoryRegisterId::R8,
                 9 => NonMandatoryRegisterId::R9,
-                _ => return Outcome::Panicked { note: format!("v4 selfRegisters: key {} out of R4-R9 range", id) },
+                _ => {
+                    return Outcome::Panicked {
+                        note: format!("v4 selfRegisters: key {} out of R4-R9 range", id),
+                    }
+                }
             };
             match sval::decode_constant(v) {
                 Ok(c) => pairs.push((reg_id, c)),
-                Err(e) => return decode_failure_outcome(e, &format!("v4 selfRegisters[{}] decode", k)),
+                Err(e) => {
+                    return decode_failure_outcome(e, &format!("v4 selfRegisters[{}] decode", k))
+                }
             }
         }
         // Sort by register id (R4 < R5 < … < R9) to ensure dense packing order.
@@ -383,7 +406,9 @@ pub fn run_entry(
                 let cost = None;
                 match sval::encode_value(&v) {
                     Ok(value) => Outcome::Success { value, cost },
-                    Err(e) => Outcome::Panicked { note: format!("result encode: {:?}", e) },
+                    Err(e) => Outcome::Panicked {
+                        note: format!("result encode: {:?}", e),
+                    },
                 }
             }
             Err(_) => Outcome::Errored,
@@ -479,7 +504,9 @@ pub fn run_entry(
             let cost = None;
             match sval::encode_value(&v) {
                 Ok(value) => Outcome::Success { value, cost },
-                Err(e) => Outcome::Panicked { note: format!("result encode: {:?}", e) },
+                Err(e) => Outcome::Panicked {
+                    note: format!("result encode: {:?}", e),
+                },
             }
         }
         Err(_) => Outcome::Errored,
@@ -500,7 +527,9 @@ mod tests {
             Outcome::Errored
         ));
         match decode_failure_outcome(sval::BridgeError::Decode("x".into()), "input decode") {
-            Outcome::Panicked { note } => assert!(note.starts_with("input decode:"), "note: {}", note),
+            Outcome::Panicked { note } => {
+                assert!(note.starts_with("input decode:"), "note: {}", note)
+            }
             other => panic!("expected Panicked, got {:?}", outcome_name(&other)),
         }
     }

@@ -132,7 +132,12 @@ pub fn decode_stype(j: &J) -> Result<SType, BridgeError> {
                     .map_err(|e| BridgeError::Decode(format!("STuple arity: {:?}", e)))?,
             )
         }
-        other => return Err(BridgeError::Decode(format!("unsupported SType tag: {}", other))),
+        other => {
+            return Err(BridgeError::Decode(format!(
+                "unsupported SType tag: {}",
+                other
+            )))
+        }
     })
 }
 
@@ -229,12 +234,14 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
     };
 
     Ok(match kind {
-        "Boolean" => lit(
-            SType::SBoolean,
-            Literal::Boolean(j["value"].as_bool().ok_or_else(|| {
-                BridgeError::Decode(format!("Boolean value not a bool: {}", j))
-            })?),
-        ),
+        "Boolean" => {
+            lit(
+                SType::SBoolean,
+                Literal::Boolean(j["value"].as_bool().ok_or_else(|| {
+                    BridgeError::Decode(format!("Boolean value not a bool: {}", j))
+                })?),
+            )
+        }
         "Byte" => lit(SType::SByte, Literal::Byte(num_i64("Byte")? as i8)),
         "Short" => lit(SType::SShort, Literal::Short(num_i64("Short")? as i16)),
         "Int" => lit(SType::SInt, Literal::Int(num_i64("Int")? as i32)),
@@ -265,16 +272,16 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
             use ergo_chain_types::EcPoint;
             let ge = EcPoint::sigma_parse_bytes(&hex_field("bytes_hex")?)
                 .map_err(|e| BridgeError::Refused(format!("GroupElement parse: {:?}", e)))?;
-            lit(
-                SType::SGroupElement,
-                Literal::GroupElement(alloc_arc(ge)),
-            )
+            lit(SType::SGroupElement, Literal::GroupElement(alloc_arc(ge)))
         }
         "Box" => {
             use ergotree_ir::chain::ergo_box::ErgoBox;
             let b = ErgoBox::sigma_parse_bytes(&hex_field("bytes_hex")?)
                 .map_err(|e| BridgeError::Refused(format!("Box parse: {:?}", e)))?;
-            lit(SType::SBox, Literal::CBox(ergotree_ir::reference::Ref::from(b)))
+            lit(
+                SType::SBox,
+                Literal::CBox(ergotree_ir::reference::Ref::from(b)),
+            )
         }
         "AvlTree" => {
             use ergotree_ir::mir::avl_tree_data::AvlTreeData;
@@ -312,7 +319,10 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
             let bytes = hex_field("value_hex")?;
             let coll = CollKind::from_collection(
                 SType::SByte,
-                bytes.iter().map(|b| Literal::Byte(*b as i8)).collect::<Vec<_>>(),
+                bytes
+                    .iter()
+                    .map(|b| Literal::Byte(*b as i8))
+                    .collect::<Vec<_>>(),
             )
             .map_err(|e| BridgeError::Decode(format!("Coll[Byte] build: {:?}", e)))?;
             lit(
@@ -516,7 +526,12 @@ mod tests {
         ];
         for (t, tag) in leaves {
             assert_eq!(encode_stype(&t), json!({"tag": tag}), "encode {}", tag);
-            assert_eq!(decode_stype(&json!({"tag": tag})).expect(tag), t, "decode {}", tag);
+            assert_eq!(
+                decode_stype(&json!({"tag": tag})).expect(tag),
+                t,
+                "decode {}",
+                tag
+            );
         }
         // Recursive forms round-trip (incl. STuple, previously missing from decode).
         for j in [
