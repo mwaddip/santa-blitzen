@@ -16,6 +16,7 @@
 //! arrays order-sensitive, numbers numeric, strings exact, null==null).
 
 mod eval;
+mod nipopow;
 mod preheader;
 mod sval;
 mod transaction;
@@ -112,6 +113,14 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
     let is_v6_fullctx = vector["schema"]
         .as_str()
         .is_some_and(|s| s == "santa-eval/v6-fullctx");
+    let is_nipopow = vector["schema"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("santa-nipopow/"));
+    let chain_json: Option<&Vec<J>> = if is_nipopow {
+        vector["chain"].as_array()
+    } else {
+        None
+    };
     entries
         .iter()
         .map(|entry| {
@@ -142,14 +151,26 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                 let actual = caught_actual_tx(std::panic::AssertUnwindSafe(|| {
                     transaction::run_entry(entry).to_json()
                 }));
-                // The blessed expected in the actuals vocabulary: {valid, cost, error:null}.
-                // `reason` is diagnostic-only (never graded) — dropped so self-compare
-                // doesn't coal on differing reject strings.
                 let expected = serde_json::json!({
                     "valid": entry["expected"]["valid"],
                     "cost": entry["expected"]["cost"],
                     "error": J::Null,
                 });
+                (name, actual, expected)
+            } else if is_nipopow {
+                let chain = chain_json.expect("nipopow vector missing chain");
+                let kind = entry["kind"].as_str().unwrap_or("");
+                let actual = caught_actual(std::panic::AssertUnwindSafe(|| match kind {
+                    "nipopow_interlinks" => nipopow::run_interlinks(chain),
+                    "nipopow_prove" => {
+                        let m = entry["payload"]["m"].as_u64().expect("missing m") as u32;
+                        let k = entry["payload"]["k"].as_u64().expect("missing k") as u32;
+                        let hid = entry["payload"]["headerId"].as_str();
+                        nipopow::run_prove(chain, m, k, hid)
+                    }
+                    _ => serde_json::json!({"error": "not-implemented"}),
+                }));
+                let expected = entry["expected"].clone();
                 (name, actual, expected)
             } else {
                 let tree_hex = entry["tree_bytes_hex"]

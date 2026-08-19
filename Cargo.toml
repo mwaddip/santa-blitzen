@@ -21,6 +21,7 @@ ergo-chain-types = { path = "../sigma-rust/ergo-chain-types" }
 ergo-lib = { path = "../sigma-rust/ergo-lib" }
 # ScorexSerializable (Header parses via scorex_parse_bytes, not SigmaSerializable).
 sigma-ser = { path = "../sigma-rust/sigma-ser" }
+ergo-nipopow = { path = "../sigma-rust/ergo-nipopow" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Used to generate the deterministic Context template (the `arbitrary` feature already
