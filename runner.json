@@ -2,7 +2,7 @@
   "name": "blitzen-eni",
   "label": "blitzen (sigma-rust @ eni)",
   "version": "v6",
-  "tiers": ["eval", "wire", "transaction"],
+  "tiers": ["eval", "wire", "transaction", "nipopow"],
   "cost": true,
   "impl": "https://github.com/mwaddip/sigma-rust.git#eni"
 }
