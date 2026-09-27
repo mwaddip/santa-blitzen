@@ -22,9 +22,12 @@ impl="$(cd "$1" && pwd)"
 ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
 # Build-identity patch (runner-contract §3, declared in README + patches/):
 # sigma-rust exposes no lenient (non-SigmaProp-root) parse entry, so the build
-# applies patches/sigma-rust-lenient-parse.patch to the checkout — additive and
-# behavior-neutral (production sigma_parse/sigma_parse_bytes unchanged; adds
-# ErgoTree::sigma_parse_bytes_lenient, eval.rs's parse entry). Unlike the retired
+# applies patches/sigma-rust-lenient-parse.patch to the checkout. It adds
+# ErgoTree::sigma_parse_bytes_lenient (eval.rs's parse entry) and a thread-local
+# flag that only that entry sets; the one root-type check in sigma_parse_sized reads
+# it. The parse logic itself is untouched, so production parsing behaves exactly as
+# the checkout's own, and an upstream change to the parse does not conflict with
+# the patch. Unlike the retired
 # byte-munging lenient_tree_bytes, it parses the REAL header, so size-bit
 # semantics (Rule-1012) are preserved. conform's checkout step is a plain
 # `git checkout` (no -f), so the tree MUST be pristine again afterwards: heal any
