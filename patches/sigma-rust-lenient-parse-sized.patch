@@ -1,0 +1,116 @@
+diff --git a/ergotree-ir/src/ergo_tree.rs b/ergotree-ir/src/ergo_tree.rs
+index 7fd7d9b4..8656d5c5 100644
+--- a/ergotree-ir/src/ergo_tree.rs
++++ b/ergotree-ir/src/ergo_tree.rs
+@@ -25,6 +25,27 @@ use derive_more::From;
+ use io::Cursor;
+ #[cfg(feature = "std")]
+ use std::sync::OnceLock;
++
++// SANTA runner build patch (blitzen-develop `patches/sigma-rust-lenient-parse-sized.patch`). Set only by
++// `ErgoTree::sigma_parse_bytes_lenient`, and taken by the outermost size-flagged tree's
++// `sigma_parse_sized` before it parses anything nested, so only that tree's root skips the
++// SigmaProp check. Production parsing never sets it.
++#[cfg(feature = "std")]
++std::thread_local! {
++    static LENIENT_ROOT: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
++}
++
++/// Take (read and clear) the lenient-root flag.
++#[cfg(feature = "std")]
++fn take_lenient_root() -> bool {
++    LENIENT_ROOT.with(|f| f.replace(false))
++}
++
++/// Without `std` there is no lenient entry point, so the flag is never set.
++#[cfg(not(feature = "std"))]
++fn take_lenient_root() -> bool {
++    false
++}
+ use thiserror::Error;
+ 
+ mod tree_header;
+@@ -146,6 +167,8 @@ impl ErgoTree {
+         r: &mut R,
+         header: ErgoTreeHeader,
+     ) -> Result<ParsedErgoTree, ErgoTreeError> {
++        // Taken before the constants and the root are parsed, so a nested tree never sees it.
++        let lenient_root = take_lenient_root();
+         let constants = if header.is_constant_segregation() {
+             ErgoTree::sigma_parse_constants(r)?
+         } else {
+@@ -158,7 +181,7 @@ impl ErgoTree {
+         #[allow(unused)]
+         let has_deserialize = r.was_deserialize();
+         r.set_deserialize(was_deserialize);
+-        if root.tpe() != SType::SSigmaProp {
++        if root.tpe() != SType::SSigmaProp && !lenient_root {
+             return Err(ErgoTreeError::RootTpeError(root.tpe()));
+         }
+         Ok(ParsedErgoTree {
+@@ -170,6 +193,27 @@ impl ErgoTree {
+         })
+     }
+ 
++    /// Parse an ErgoTree from bytes WITHOUT the `SigmaProp` root-type check. Mirrors
++    /// sigma-state's `ErgoTreeSerializer.deserializeErgoTree(.., checkType = false)` (a
++    /// `private[sigma]` overload): the production parse runs unchanged (the header and Rule-1012
++    /// `CheckHeaderSizeBit`, the size handling, constants and root), and only the outermost tree's
++    /// root-type check is skipped. Intended for tooling/conformance that evaluates arbitrary-typed
++    /// root expressions; production parsing keeps the check, as real ErgoTrees are always
++    /// `SigmaProp`-rooted.
++    #[cfg(feature = "std")]
++    pub fn sigma_parse_bytes_lenient(bytes: &[u8]) -> Result<Self, SigmaParsingError> {
++        // Only a size-flagged tree has the root-type check (`sigma_parse_sized`). Arm the flag for
++        // that case alone, so an unsized outer tree cannot hand it to a nested one.
++        let sized = bytes
++            .first()
++            .is_some_and(|h| ErgoTreeHeader::new(*h).is_ok_and(|h| h.has_size()));
++        LENIENT_ROOT.with(|f| f.set(sized));
++        let parsed = ErgoTree::sigma_parse_bytes(bytes);
++        // Cleared again in case the parse failed before reaching `sigma_parse_sized`.
++        LENIENT_ROOT.with(|f| f.set(false));
++        parsed
++    }
++
+     fn sigma_parse_constants<R: SigmaByteRead>(
+         r: &mut R,
+     ) -> Result<Vec<Constant>, SigmaParsingError> {
+@@ -572,6 +616,37 @@ mod tests {
+         assert!(ErgoTree::sigma_parse_bytes(&bytes).is_err());
+     }
+ 
++    #[test]
++    fn sigma_parse_bytes_lenient_accepts_non_sigmaprop_root() {
++        // The conformance runner needs to evaluate arbitrary-typed root exprs.
++        // Strict parse rejects a non-SigmaProp root on a sized tree (→ Unparsed);
++        // the lenient parse (mirror of sigma-state `deserializeErgoTree(checkType
++        // = false)`) accepts it as a Parsed tree with the root accessible.
++        let expr: Expr = 1i32.into(); // Int root, not SigmaProp
++        let bytes = ErgoTree::new(ErgoTreeHeader::v1(true), &expr)
++            .unwrap()
++            .sigma_serialize_bytes()
++            .unwrap();
++
++        // strict: a sized non-SigmaProp root is not parsed (preserved as Unparsed)
++        let strict = ErgoTree::sigma_parse_bytes(&bytes).unwrap();
++        assert!(
++            strict.parsed_tree().is_err(),
++            "strict parse must not yield a Parsed tree for a non-SigmaProp root"
++        );
++
++        // lenient: Parsed, root accessible and of the original (Int) type
++        let lenient = ErgoTree::sigma_parse_bytes_lenient(&bytes).unwrap();
++        assert!(
++            lenient.parsed_tree().is_ok(),
++            "lenient parse must yield a Parsed tree for a non-SigmaProp root"
++        );
++        assert_eq!(lenient.proposition().unwrap().tpe(), SType::SInt);
++
++        // the flag does not leak: the next strict parse is strict again
++        assert!(ErgoTree::sigma_parse_bytes(&bytes).unwrap().parsed_tree().is_err());
++    }
++
+     #[test]
+     fn deserialization_non_parseable_root_v1() {
+         // no constant segregation, Expr is invalid

@@ -39,11 +39,14 @@ branch (SANTA runner-contract §3 — build identity is declared):
 - **eni** carries the helper natively behind the `arbitrary` feature (`642041be` —
   the same gated conformance surface as `try_eval_out`); no build patch.
 - **develop** (upstream has no helper yet) applies
-  `patches/sigma-rust-lenient-parse.patch` to the checkout at build time. It adds
-  the helper and a thread-local flag that only the helper sets; the one root-type
-  check in `sigma_parse_sized` reads it, and nothing else in the parse changes. So
-  production parsing behaves exactly as the checkout's own, and upstream changes to
-  the parse (e.g. the depth-limit fix) apply underneath it without conflict. The
+  a lenient-parse patch to the checkout at build time. It adds the helper and a
+  thread-local flag that only the helper sets; the one root-type check in the
+  tree-body parse reads it, and nothing else in the parse changes. So production
+  parsing behaves exactly as the checkout's own. There is one variant per upstream
+  shape of that function, picked by what the checkout contains:
+  `patches/sigma-rust-lenient-parse-body.patch` for `sigma_parse_body` (the
+  wire-parse-conformance fold) and `patches/sigma-rust-lenient-parse-sized.patch`
+  for `sigma_parse_sized` (develop before it; retire it once the fold merges). The
   checkout is restored pristine after every run (EXIT trap; healed on entry after a
   crash). The patch retires when the helper + Rule-1012 PR
   (`fix/header-size-bit-rule1012`) merges to develop.
