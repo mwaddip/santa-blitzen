@@ -1,8 +1,8 @@
 {
-  "name": "blitzen-eni",
-  "label": "blitzen (sigma-rust @ eni)",
+  "name": "blitzen-master",
+  "label": "blitzen (sigma-rust @ master)",
   "version": "v6",
   "tiers": ["eval", "wire", "transaction", "nipopow"],
   "cost": true,
-  "impl": "https://github.com/mwaddip/sigma-rust.git#eni"
+  "impl": "https://github.com/mwaddip/sigma-rust.git#master"
 }

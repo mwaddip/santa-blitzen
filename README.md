@@ -38,6 +38,9 @@ the JVM blesser's `deserializeErgoTree(checkType=false)`. Provenance differs by
 branch (SANTA runner-contract §3 — build identity is declared):
 - **eni** carries the helper natively behind the `arbitrary` feature (`642041be` —
   the same gated conformance surface as `try_eval_out`); no build patch.
+- **master** is the eni runner pointed at the master branch of the mwaddip/sigma-rust
+  fork, which replaces eni over time. It expects eni's API (the helper included), so
+  it builds only once that has moved to the fork's master.
 - **develop** (upstream has no helper yet) applies
   `patches/sigma-rust-lenient-parse.patch` to the checkout at build time — additive
   and behavior-neutral (production `sigma_parse` / `sigma_parse_bytes` unchanged);
@@ -102,6 +105,6 @@ never self-judges.
   [SANTA runner contract](https://github.com/mwaddip/santa/blob/HEAD/docs/contract/runner-contract.md)
   — a living document; refer to it rather than duplicating the schema here.
 
-SANTA owns the `impl` checkout (clones `<url>` per-instance, checks out `<ref>`), so two
-runner dirs — e.g. `blitzen-develop` and `blitzen-eni` — pin different refs and compare
-the same implementation's branches side by side without colliding.
+SANTA owns the `impl` checkout (clones `<url>` per-instance, checks out `<ref>`), so the
+runner dirs — `blitzen-develop`, `blitzen-eni` and `blitzen-master` — pin different refs and
+compare the same implementation's branches side by side without colliding.
