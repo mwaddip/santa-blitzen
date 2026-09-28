@@ -8,6 +8,7 @@ use ergo_lib::chain::transaction::Transaction;
 use ergotree_ir::chain::ergo_box::ErgoBox;
 use ergotree_ir::ergo_tree::ErgoTree;
 use ergotree_ir::mir::constant::Constant;
+use ergotree_ir::serialization::sigma_byte_reader;
 use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_ir::sigma_protocol::sigma_boolean::SigmaBoolean;
 
@@ -86,7 +87,72 @@ pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
         "SigmaBoolean" => roundtrip::<SigmaBoolean>(&bytes),
         "Transaction" => roundtrip::<Transaction>(&bytes),
         "ErgoTree" => roundtrip_ergotree(&bytes),
+        "BlockTransactions" => roundtrip_block_transactions(&bytes),
         _ => WireOutcome::NotImplemented,
+    }
+}
+
+/// A block's transactions section, parsed the way ergo-node-rust parses one (`validation/src/sections.rs`
+/// `parse_block_transactions`). The section is the 32-byte header id, then a VLQ that is either the tx count or
+/// `10_000_000 + block version` (followed by the count), then the transactions. Every transaction is read by
+/// `Transaction::sigma_parse` from ONE reader over the rest, so sigma-rust decides what reader state a transaction
+/// starts with; the JVM starts each on a fresh reader (`ErgoTransactionSerializer.parse`). Reserialized with the same
+/// framing.
+fn roundtrip_block_transactions(bytes: &[u8]) -> WireOutcome {
+    match block_transactions_reserialized(bytes) {
+        Some(out) => WireOutcome::RoundTrip {
+            bytes_hex: bytes_to_hex(&out),
+        },
+        None => WireOutcome::Errored,
+    }
+}
+
+fn block_transactions_reserialized(bytes: &[u8]) -> Option<Vec<u8>> {
+    const BLOCK_VERSION_SENTINEL: u32 = 10_000_000;
+    let header_id = bytes.get(..32)?;
+    let mut pos = 32;
+    let ver_or_count = read_vlq_u32(bytes, &mut pos)?;
+    let (version_marker, count) = if ver_or_count > BLOCK_VERSION_SENTINEL {
+        (Some(ver_or_count), read_vlq_u32(bytes, &mut pos)?)
+    } else {
+        (None, ver_or_count)
+    };
+    let mut r = sigma_byte_reader::from_bytes(&bytes[pos..]);
+    let mut out = header_id.to_vec();
+    if let Some(marker) = version_marker {
+        write_vlq_u32(marker, &mut out);
+    }
+    write_vlq_u32(count, &mut out);
+    for _ in 0..count {
+        let tx = Transaction::sigma_parse(&mut r).ok()?;
+        out.extend(tx.sigma_serialize_bytes().ok()?);
+    }
+    Some(out)
+}
+
+/// Unsigned LEB128: the JVM's `getUInt` / `putUInt` section framing.
+fn read_vlq_u32(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+    let mut value: u64 = 0;
+    for shift in (0..35).step_by(7) {
+        let b = *bytes.get(*pos)?;
+        *pos += 1;
+        value |= u64::from(b & 0x7f) << shift;
+        if b & 0x80 == 0 {
+            return u32::try_from(value).ok();
+        }
+    }
+    None
+}
+
+fn write_vlq_u32(mut v: u32, out: &mut Vec<u8>) {
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            return;
+        }
+        out.push(b | 0x80);
     }
 }
 
@@ -102,6 +168,26 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::run_entry;
     use serde_json::Value as J;
+
+    /// SANTA `wire/v6/authored/BlockTransactions.reader_scope` #3: a block section (header id, the version-4
+    /// marker `84 ad e2 04`, count 2) holding two txs whose output trees each define ValDef(1) and use it. Shallow on
+    /// purpose: a debug build takes tens of KB of stack per expression level, so #1's 109-deep tree would overflow
+    /// the 2 MB test thread (the release runner parses it fine).
+    const TWO_TX_SECTION: &str = "bfbc8c5cb61b59dd3cd2918450c7272600312b3b8c929808b09e76253d1bfecf84ade2040201456971d1f52b5bafce6e5c94848a0892d936cfe52a65d6a75d48d1fcc586f9f60000000001c0843d00d801d60108d37201010000015dea0e5b89dbbc08eb741989221dda7428575bb695d2a75bb15e434e379af43b0000000001c0843d00d801d60108d37201010000";
+
+    #[test]
+    fn block_transactions_round_trips_the_section_framing() {
+        let j = run_entry("BlockTransactions", TWO_TX_SECTION).to_json();
+        assert_eq!(j["error"], J::Null);
+        assert_eq!(j["bytes_hex"], TWO_TX_SECTION);
+    }
+
+    #[test]
+    fn block_transactions_rejects_a_truncated_section() {
+        // the header id alone: no version marker, no count
+        let j = run_entry("BlockTransactions", &TWO_TX_SECTION[..64]).to_json();
+        assert_eq!(j["error"], "errored");
+    }
 
     #[test]
     fn box_round_trips_to_its_own_bytes() {
