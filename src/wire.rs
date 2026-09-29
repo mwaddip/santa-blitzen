@@ -7,8 +7,10 @@
 use ergo_lib::chain::transaction::Transaction;
 use ergotree_ir::chain::ergo_box::ErgoBox;
 use ergotree_ir::ergo_tree::ErgoTree;
+use ergotree_ir::ergo_tree::ErgoTreeVersion;
 use ergotree_ir::mir::constant::Constant;
-use ergotree_ir::serialization::sigma_byte_reader;
+use ergotree_ir::serialization::sigma_byte_reader::{self, SigmaByteRead};
+use ergotree_ir::serialization::sigma_byte_writer::{SigmaByteWrite, SigmaByteWriter};
 use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_ir::sigma_protocol::sigma_boolean::SigmaBoolean;
 
@@ -52,6 +54,26 @@ fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
     }
 }
 
+/// Transaction round-trip at the entry's ErgoTree version: SANTA runs a wire entry under its
+/// version context, and sigma-rust reads and writes a transaction at its reader's and writer's
+/// version (a v6 block's at 3, an earlier one's below)
+fn roundtrip_transaction(bytes: &[u8], version: ErgoTreeVersion) -> WireOutcome {
+    match sigma_byte_reader::from_bytes(bytes).with_tree_version(version, Transaction::sigma_parse)
+    {
+        Ok(tx) => {
+            let mut out = Vec::new();
+            let mut w = SigmaByteWriter::new(&mut out, None);
+            match w.with_tree_version(version, |w| tx.sigma_serialize(w)) {
+                Ok(()) => WireOutcome::RoundTrip {
+                    bytes_hex: bytes_to_hex(&out),
+                },
+                Err(_) => WireOutcome::Errored,
+            }
+        }
+        Err(_) => WireOutcome::Errored,
+    }
+}
+
 /// ErgoTree round-trip. Unlike the generic `roundtrip`, this uses `sigma_parse_bytes_lenient` — the
 /// arbitrary-root parse (the analog of the JVM's `checkType=false` `LenientErgoTree`). Our wire
 /// vectors carry Int-rooted trees (a type-var-name witness), which the SigmaProp-strict
@@ -72,7 +94,7 @@ fn roundtrip_ergotree(bytes: &[u8]) -> WireOutcome {
 
 /// Round-trip one wire entry. `kind` selects the serializer. Header isn't wired here — it parses
 /// via ScorexSerializable, not SigmaSerializable → not-implemented.
-pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
+pub fn run_entry(kind: &str, bytes_hex: &str, tree_version: u8) -> WireOutcome {
     let bytes = match crate::hex_to_bytes(bytes_hex) {
         Ok(b) => b,
         Err(e) => {
@@ -85,7 +107,7 @@ pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
         "Box" => roundtrip::<ErgoBox>(&bytes),
         "Constant" => roundtrip::<Constant>(&bytes),
         "SigmaBoolean" => roundtrip::<SigmaBoolean>(&bytes),
-        "Transaction" => roundtrip::<Transaction>(&bytes),
+        "Transaction" => roundtrip_transaction(&bytes, ErgoTreeVersion::from(tree_version)),
         "ErgoTree" => roundtrip_ergotree(&bytes),
         "BlockTransactions" => roundtrip_block_transactions(&bytes),
         _ => WireOutcome::NotImplemented,
@@ -117,6 +139,21 @@ fn block_transactions_reserialized(bytes: &[u8]) -> Option<Vec<u8>> {
     } else {
         (None, ver_or_count)
     };
+    // ergo reads a v6 block's transactions at version context (blockVersion - 1,
+    // blockVersion - 1), an earlier block's at the default (1, 1), and writes them at
+    // (blockVersion, blockVersion) from v3 blocks (ergo v6.0.6 `BlockTransactions.scala:150-160`,
+    // `:184-202`); the reader's and writer's versions are sigma-rust's context
+    let block_version = version_marker.map_or(1, |m| m - BLOCK_VERSION_SENTINEL);
+    let read_version = if block_version >= 4 {
+        ErgoTreeVersion::V3
+    } else {
+        ErgoTreeVersion::V0
+    };
+    let write_version = if block_version >= 3 {
+        ErgoTreeVersion::V3
+    } else {
+        ErgoTreeVersion::V0
+    };
     let mut r = sigma_byte_reader::from_bytes(&bytes[pos..]);
     let mut out = header_id.to_vec();
     if let Some(marker) = version_marker {
@@ -124,8 +161,12 @@ fn block_transactions_reserialized(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     write_vlq_u32(count, &mut out);
     for _ in 0..count {
-        let tx = Transaction::sigma_parse(&mut r).ok()?;
-        out.extend(tx.sigma_serialize_bytes().ok()?);
+        let tx = r
+            .with_tree_version(read_version, Transaction::sigma_parse)
+            .ok()?;
+        let mut w = SigmaByteWriter::new(&mut out, None);
+        w.with_tree_version(write_version, |w| tx.sigma_serialize(w))
+            .ok()?;
     }
     Some(out)
 }
@@ -177,7 +218,7 @@ mod tests {
 
     #[test]
     fn block_transactions_round_trips_the_section_framing() {
-        let j = run_entry("BlockTransactions", TWO_TX_SECTION).to_json();
+        let j = run_entry("BlockTransactions", TWO_TX_SECTION, 3).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], TWO_TX_SECTION);
     }
@@ -185,7 +226,7 @@ mod tests {
     #[test]
     fn block_transactions_rejects_a_truncated_section() {
         // the header id alone: no version marker, no count
-        let j = run_entry("BlockTransactions", &TWO_TX_SECTION[..64]).to_json();
+        let j = run_entry("BlockTransactions", &TWO_TX_SECTION[..64], 3).to_json();
         assert_eq!(j["error"], "errored");
     }
 
@@ -193,7 +234,7 @@ mod tests {
     fn box_round_trips_to_its_own_bytes() {
         // sbox_minimal from vectors/wire/v5/authored/Box.json
         let hex = "c0843d09020101000000000000000000000000000000000000000000000000000000000000000000000000";
-        let j = run_entry("Box", hex).to_json();
+        let j = run_entry("Box", hex, 3).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], hex);
     }
@@ -201,7 +242,7 @@ mod tests {
     #[test]
     fn sigma_boolean_round_trips_to_its_own_bytes() {
         let hex = "d3"; // TrivialProp(true) from vectors/wire/v5/authored/SigmaBoolean.json
-        let j = run_entry("SigmaBoolean", hex).to_json();
+        let j = run_entry("SigmaBoolean", hex, 3).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], hex);
     }
@@ -210,7 +251,7 @@ mod tests {
     fn constant_round_trips_to_its_own_bytes() {
         // bool_0 from vectors/wire/v5/vendored/Constant.json (Fleet)
         let hex = "0101";
-        let j = run_entry("Constant", hex).to_json();
+        let j = run_entry("Constant", hex, 3).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], hex);
     }
@@ -219,7 +260,7 @@ mod tests {
     fn transaction_round_trips_to_its_own_bytes() {
         // tx_466f1aef from vectors/wire/v5/vendored/Transaction.json (Fleet signed tx)
         let hex = "010c7a0f145994fa15b02eca8189b454eeff9eec5ca33fa135b4474d4ee8ed35c70000000220fa2bf23962cdf51b07722d6237c0c7b8a44f78856c0f7ec308dc1ef1a92a51d9a2cc8a09abfaed87afacfbb7daee79a6b26f10c6613fc13d3f3953e5521d1a0280cc9497e9d1870f101004020e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a7017300730110010204020404040004c0fd4f05808c82f5f6030580b8c9e5ae040580f882ad16040204c0944004c0f407040004000580f882ad16d19683030191a38cc7a7019683020193c2b2a57300007473017302830108cdeeac93a38cc7b2a573030001978302019683040193b1a5730493c2a7c2b2a573050093958fa3730673079973089c73097e9a730a9d99a3730b730c0599c1a7c1b2a5730d00938cc7b2a5730e0001a390c1a7730fb3825c0200010180b0abe9c1c7fa1300809ccdca64100204a00b08cd0274e729bb6615cbda94d9d176a2f1525068f12b330e38bbbf387232797dfd891fea02d192a39a8cc7a70173007301b3825c010180f085da2c00";
-        let j = run_entry("Transaction", hex).to_json();
+        let j = run_entry("Transaction", hex, 3).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], hex);
     }
@@ -227,7 +268,7 @@ mod tests {
     #[test]
     fn unwired_kind_is_not_implemented() {
         // Header still parses via ScorexSerializable, not SigmaSerializable -> not wired here.
-        let j = run_entry("Header", "00").to_json();
+        let j = run_entry("Header", "00", 3).to_json();
         assert_eq!(j["error"], "not-implemented");
         assert_eq!(j["bytes_hex"], J::Null);
     }
@@ -239,7 +280,7 @@ mod tests {
         // (echo) and NOT 3-FFFD. From vectors/wire/v6/authored/STypeVar.name_utf8_roundtrip.json.
         let input = "1b1901040ad801d701016703eda080d901026703eda08072027300";
         let expected = "1b1901040ad801d701016703efbfbdd901026703efbfbd72027300";
-        let j = run_entry("ErgoTree", input).to_json();
+        let j = run_entry("ErgoTree", input, 3).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], expected);
     }

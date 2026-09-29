@@ -140,7 +140,7 @@ fn build_context(
 
     let mut ext = ContextExtension::empty();
     if let Some(c) = input {
-        ext.values.insert(1u8, c);
+        ext.values.insert(1u8, c.into());
     }
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
     ctx.extension = ext;
@@ -196,7 +196,7 @@ fn build_context_v4(
 
     // Bind var 1 to `input` in the context extension.
     let mut ext = ContextExtension::empty();
-    ext.values.insert(1u8, input);
+    ext.values.insert(1u8, input.into());
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
     ctx.extension = ext;
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
@@ -275,7 +275,7 @@ pub fn run_entry(
             };
             match sval::decode_constant(v) {
                 Ok(c) => {
-                    ext.values.insert(id, c);
+                    ext.values.insert(id, c.into());
                 }
                 Err(e) => return decode_failure_outcome(e, "v5 extension decode"),
             }
@@ -453,7 +453,7 @@ pub fn run_entry(
                         };
                         match sval::decode_constant(v) {
                             Ok(c) => {
-                                ext.values.insert(id, c);
+                                ext.values.insert(id, c.into());
                             }
                             Err(e) => return decode_failure_outcome(e, "input decode (v3)"),
                         }
@@ -677,7 +677,7 @@ fn build_context_v6_fullctx(
                             "input_extensions[{i}][{k}]: {other:?}"
                         )),
                     })?;
-                    ext.values.insert(id, c);
+                    ext.values.insert(id, c.into());
                 }
             }
             input_extensions.push(ext);

@@ -142,8 +142,9 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                 let bytes_hex = entry["bytes_hex"]
                     .as_str()
                     .expect("wire entry missing bytes_hex");
+                let tree_version = entry["version"]["ergoTree"].as_u64().unwrap_or(3) as u8;
                 let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    wire::run_entry(kind, bytes_hex).to_json()
+                    wire::run_entry(kind, bytes_hex, tree_version).to_json()
                 }));
                 let expected = serde_json::json!({"bytes_hex": bytes_hex, "error": J::Null});
                 (name, actual, expected)

@@ -26,6 +26,8 @@ use ergo_lib::chain::parameters::{Parameter, Parameters};
 use ergo_lib::chain::transaction::Transaction;
 use ergo_lib::wallet::tx_context::TransactionContext;
 use ergotree_ir::chain::ergo_box::ErgoBox;
+use ergotree_ir::ergo_tree::ErgoTreeVersion;
+use ergotree_ir::serialization::sigma_byte_reader::{self, SigmaByteRead};
 use ergotree_ir::serialization::SigmaSerializable; // Transaction/ErgoBox sigma_parse_bytes
 use sigma_ser::ScorexSerializable; // Header/EcPoint scorex_parse_bytes
 
@@ -200,7 +202,16 @@ pub fn run_entry(entry: &serde_json::Value) -> TxOutcome {
             }
         }
     };
-    let tx = match Transaction::sigma_parse_bytes(&tx_bytes) {
+    // ergo reads a v6 block's transactions at version context (blockVersion - 1,
+    // blockVersion - 1), an earlier block's at the default (1, 1) (ergo v6.0.6
+    // `BlockTransactions.scala:184-202`); the reader's version is sigma-rust's context
+    let parse_version = match entry["preHeader"]["version"].as_u64() {
+        Some(v) if v >= 4 => ErgoTreeVersion::V3,
+        _ => ErgoTreeVersion::V0,
+    };
+    let tx = match sigma_byte_reader::from_bytes(&tx_bytes)
+        .with_tree_version(parse_version, Transaction::sigma_parse)
+    {
         Ok(t) => t,
         Err(e) => {
             return TxOutcome::Errored {
