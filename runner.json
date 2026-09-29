@@ -1,6 +1,6 @@
 {
-  "name": "blitzen-master",
-  "label": "blitzen (sigma-rust @ master)",
+  "name": "blitzen-mwaddip",
+  "label": "blitzen (sigma-rust @ mwaddip)",
   "version": "v6",
   "tiers": ["eval", "wire", "transaction", "nipopow"],
   "cost": true,

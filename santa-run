@@ -7,13 +7,11 @@
 # path-dep (../sigma-rust) to that checkout, then build + emit. Using $1 (not a
 # shared ../sigma-rust) is what lets two runner dirs pin different refs.
 #
-# This is the *master* runner, a fork of the eni runner: it follows the master
-# branch of the mwaddip/sigma-rust fork, which is taking over from eni. Like eni it
-# builds with `--features jit-cost` against eni's API (the JIT-cost context, the
-# native lenient parse), so it builds once that work has moved to master; until
-# then the build fails and SANTA reports the runner as unable to build. (The
-# develop runner omits the flag — upstream has no cost model, so it emits values
-# only.)
+# This is the *mwaddip* runner (SANTA's blitzen-mwaddip; this branch is `master`):
+# the eni runner, following the master branch of the mwaddip/sigma-rust fork,
+# which took over from eni. It builds with `--features jit-cost` against the
+# fork's API (the JIT-cost context, the native lenient parse). (The develop runner
+# omits the flag — upstream has no cost model, so it emits values only.)
 #
 # Toolchain self-provisioned (presence-as-state: mise.toml) — re-exec once under
 # `mise exec` so cargo is on PATH for the build. The orchestrator stays
