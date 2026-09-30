@@ -43,8 +43,7 @@ fn parse_chain(chain_json: &[J]) -> Vec<PoPowHeader> {
                 .expect("update_interlinks failed");
         let ext_fields = NipopowAlgos::pack_interlinks(interlinks.clone());
         let ext = ExtensionCandidate::new(ext_fields).expect("ext");
-        let proof =
-            NipopowAlgos::proof_for_interlink_vector(&ext).expect("interlink proof");
+        let proof = NipopowAlgos::proof_for_interlink_vector(&ext).expect("interlink proof");
         popow_headers.push(PoPowHeader {
             header: headers[i].clone(),
             interlinks,
