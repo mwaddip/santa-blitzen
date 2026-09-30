@@ -86,6 +86,11 @@ pub fn run_prove(chain_json: &[J], m: u32, k: u32, header_id: Option<&str>) -> J
 
     let algos = NipopowAlgos::default();
     let proof = algos.prove(&chain, k, m).expect("prove failed");
-    let proof_bytes = proof.scorex_serialize_bytes().expect("serialize proof");
+    // `proofHex` is ergo's `NipopowProofSerializer.toBytes`, which ends with the proof's
+    // `continuous` flag (`NipopowProof.scala:208`). sigma-rust writes the proof without it: the
+    // flag belongs to the wire encoding, which the node adds. This tier proves with
+    // `continuous = false` (runner-contract-nipopow §5), so the runner appends a 0.
+    let mut proof_bytes = proof.scorex_serialize_bytes().expect("serialize proof");
+    proof_bytes.push(0);
     serde_json::json!({ "proofHex": bytes_to_hex(&proof_bytes), "error": J::Null })
 }
