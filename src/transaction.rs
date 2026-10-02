@@ -158,8 +158,10 @@ fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, St
 
     // Parameters: the carried on-chain table. Start from defaults (for `MaxBlockSize`,
     // which the vector does not carry and stateful tx validation does not consult) and
-    // overwrite every provided field; pin `BlockVersion` to the pre-header's block version
-    // (this is what gates the activated ErgoTree version — e.g. v3 ops at block version 4).
+    // overwrite every provided field; set `BlockVersion` to the VOTED parameters' block version
+    // (parameters.blockVersion), which gates the activated ErgoTree version AND the monotonic
+    // creation-height rule. The JVM reads it from currentParameters, not the header. It defaults
+    // to the pre-header's version — equal in every vector that omits the field.
     let p = &entry["parameters"];
     let pget = |k: &str| -> Result<i32, String> {
         p[k].as_i64()
@@ -175,7 +177,8 @@ fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, St
     t.insert(Parameter::DataInputCost, pget("dataInputCost")?);
     t.insert(Parameter::OutputCost, pget("outputCost")?);
     t.insert(Parameter::TokenAccessCost, pget("tokenAccessCost")?);
-    t.insert(Parameter::BlockVersion, version as i32);
+    let params_block_version = p["blockVersion"].as_i64().map(|v| v as i32).unwrap_or(version as i32);
+    t.insert(Parameter::BlockVersion, params_block_version);
 
     Ok(ErgoStateContext::new(pre_header, headers, parameters))
 }
