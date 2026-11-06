@@ -208,13 +208,24 @@ pub fn run_entry(entry: &serde_json::Value) -> TxOutcome {
     // ergo reads a v6 block's transactions at version context (blockVersion - 1,
     // blockVersion - 1), an earlier block's at the default (1, 1) (ergo v6.0.6
     // `BlockTransactions.scala:184-202`); the reader's version is sigma-rust's context
-    let parse_version = match entry["preHeader"]["version"].as_u64() {
-        Some(v) if v >= 4 => ErgoTreeVersion::V3,
-        _ => ErgoTreeVersion::V0,
+    // From block version 4 the reader also takes the activated script version,
+    // blockVersion - 1; a box (below) is read from the UTXO set, outside any context.
+    // The block version is the voted parameters' (`parameters.blockVersion`, the
+    // pre-header's when the entry has none), a signed byte, as in SANTA's `TxEngine`.
+    let block_version = entry["parameters"]["blockVersion"]
+        .as_u64()
+        .or_else(|| entry["preHeader"]["version"].as_u64())
+        .map(|v| v as u8 as i8);
+    let mut tx_reader = sigma_byte_reader::from_bytes(&tx_bytes);
+    let parsed_tx = match block_version {
+        Some(v) if v >= 4 => tx_reader.with_versions(
+            ErgoTreeVersion::from((v - 1) as u8),
+            ErgoTreeVersion::V3,
+            Transaction::sigma_parse,
+        ),
+        _ => tx_reader.with_tree_version(ErgoTreeVersion::V0, Transaction::sigma_parse),
     };
-    let tx = match sigma_byte_reader::from_bytes(&tx_bytes)
-        .with_tree_version(parse_version, Transaction::sigma_parse)
-    {
+    let tx = match parsed_tx {
         Ok(t) => t,
         Err(e) => {
             return TxOutcome::Errored {

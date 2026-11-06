@@ -96,8 +96,9 @@ fn arbitrary_context() -> Context<'static> {
 
 /// Pin the contract's canonical eval context (runner-contract.md §2) onto a template
 /// clone. The corpus reads context surfaces (CONTEXT.* / preHeader.*), so these fields
-/// are load-bearing: preHeader{version = activated+1 (block-version convention — script
-/// activation derives from it here), parentId/votes zeroed at wire widths, timestamp 3,
+/// are load-bearing: preHeader{version = activated+1 (block-version convention; the
+/// activated version itself is the context's own field, set beside it), parentId/votes
+/// zeroed at wire widths, timestamp 3,
 /// nBits 0, height 0, minerPk = generator}, HEIGHT 0, dataInputs empty, `headers` EMPTY
 /// (`ContextHeaders` expresses the pinned empty seq since the BoundedVec relaxation),
 /// `lastBlockUtxoRoot` = the contract's dummy AvlTree (zero digest, all ops allowed,
@@ -110,6 +111,9 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     ctx.height = 0;
     ctx.data_inputs = None;
     ctx.pre_header.version = activated_version + 1;
+    // sigma-rust's context carries the activated script version as a field of its own, as
+    // sigmastate's `ErgoLikeContext` does: the pre-header's version does not set it.
+    ctx.activated_script_version_byte = activated_version as i8;
     ctx.pre_header.parent_id = BlockId(Digest::zero());
     ctx.pre_header.timestamp = 3;
     ctx.pre_header.n_bits = 0;
@@ -547,6 +551,7 @@ enum FullCtxError {
 fn build_context_v6_fullctx(
     context: &serde_json::Value,
     tree_version: u8,
+    activated_version: Option<u8>,
 ) -> Result<Context<'static>, FullCtxError> {
     use ergo_chain_types::{BlockId, Digest, EcPoint, Header, PreHeader, Votes};
     use ergotree_ir::chain::context::{ContextHeaders, TxIoVec};
@@ -708,6 +713,14 @@ fn build_context_v6_fullctx(
         )
     };
     ctx.pre_header = pre_header;
+    // The activated script version is the entry's `version.activated`, as SANTA's oracle takes
+    // it (`WalkerOracle.evalEnvelope`): sigma-rust's context carries it as a field of its own.
+    // An entry without one keeps what this path took before, the envelope's block version
+    // minus 1.
+    ctx.activated_script_version_byte = match activated_version {
+        Some(v) => v as i8,
+        None => (ctx.pre_header.version as i8).wrapping_sub(1),
+    };
     ctx.last_block_utxo_root = last_block_utxo_root;
     ctx.headers = ContextHeaders::from_vec(headers_vec)
         .map_err(|e| FullCtxError::Refused(format!("headers bounds: {e:?}")))?;
@@ -731,8 +744,9 @@ pub fn run_entry_fullctx(
     tree_bytes: &[u8],
     context: &serde_json::Value,
     tree_version: u8,
+    activated_version: Option<u8>,
 ) -> Outcome {
-    let ctx = match build_context_v6_fullctx(context, tree_version) {
+    let ctx = match build_context_v6_fullctx(context, tree_version, activated_version) {
         Ok(c) => c,
         Err(FullCtxError::Refused(reason)) => {
             // The library refused oracle-blessed material (a box/header/preHeader it

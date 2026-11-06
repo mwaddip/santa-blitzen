@@ -132,8 +132,9 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                 let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
                 let context = &entry["context"];
                 let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
+                let act_v = entry["version"]["activated"].as_u64().map(|v| v as u8);
                 let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    eval::run_entry_fullctx(&tree_bytes, context, tree_v).to_json()
+                    eval::run_entry_fullctx(&tree_bytes, context, tree_v, act_v).to_json()
                 }));
                 let expected = entry["expected"].clone();
                 (name, actual, expected)
@@ -143,8 +144,9 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                     .as_str()
                     .expect("wire entry missing bytes_hex");
                 let tree_version = entry["version"]["ergoTree"].as_u64().unwrap_or(3) as u8;
+                let activated_version = entry["version"]["activated"].as_u64().map(|v| v as u8);
                 let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    wire::run_entry(kind, bytes_hex, tree_version).to_json()
+                    wire::run_entry(kind, bytes_hex, tree_version, activated_version).to_json()
                 }));
                 let expected = serde_json::json!({"bytes_hex": bytes_hex, "error": J::Null});
                 (name, actual, expected)
