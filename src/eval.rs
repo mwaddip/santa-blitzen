@@ -102,12 +102,47 @@ fn arbitrary_context() -> Context<'static> {
 /// nBits 0, height 0, minerPk = generator}, HEIGHT 0, dataInputs empty, `headers` EMPTY
 /// (`ContextHeaders` expresses the pinned empty seq since the BoundedVec relaxation),
 /// `lastBlockUtxoRoot` = the contract's dummy AvlTree (zero digest, all ops allowed,
-/// keyLength 32, no value-length). SELF/outputs keep template values (no committed
-/// vector reads them; the v4 arm rebuilds SELF's registers explicitly).
+/// keyLength 32, no value-length), and SELF carries NO non-mandatory registers.
+///
+/// That last one was missing until 2026-11-07, and the comment here used to claim SELF could
+/// keep its template value because "no committed vector reads them". That stopped being true
+/// when `eval/v6/authored/Value.checkType_lazy_default.json` landed: entries #3/#6/#7 read
+/// `SELF.R4[Int]`, expecting an ABSENT register, because the JVM's canonical eval context
+/// builds its SELF box with an empty `additionalRegisters` map. The template here comes from
+/// `arbitrary_context()`, so R4-R9 held proptest-generated values of arbitrary types, and
+/// those three entries graded on a random register: #6/#7 red and #3 falsely GREEN, all for
+/// the runner's reason rather than sigma-rust's. dasher and vixen were green throughout.
+///
+/// `outputs`, `inputs` and `data_inputs` are still template values. No committed vector reads
+/// a register off them today — the same premise that just failed for SELF, so a vector that
+/// reads `OUTPUTS(i).R4` needs this treatment extended before it can be trusted.
+///
+/// The v4 arm applies its own SELF registers AFTER calling this, so it is unaffected; the
+/// full-context path never calls this at all (it assembles real boxes from the entry).
+///
+/// SELF is swapped into `inputs` at its own index as well. A box's id is a hash over its
+/// serialized form, registers included, so clearing the registers yields a DIFFERENT box —
+/// and `Context.selfBoxIndex` is `inputs.iter().position(|it| *it == ctx.self_box)`
+/// (`scontext.rs:39-43`), a full-value comparison. Replacing `self_box` alone makes SELF
+/// unfindable among the inputs and `CONTEXT.selfBoxIndex` errors, which is what the
+/// raw-actuals diff caught on the first attempt at this fix.
 fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     use ergo_chain_types::{ec_point, BlockId, Digest, Votes};
-    use ergotree_ir::chain::context::ContextHeaders;
+    use ergotree_ir::chain::context::{ContextHeaders, TxIoVec};
+    use ergotree_ir::chain::ergo_box::{ErgoBox, NonMandatoryRegisters};
     use ergotree_ir::mir::avl_tree_data::{AvlTreeData, AvlTreeFlags};
+    let self_index = ctx.inputs.iter().position(|b| **b == *ctx.self_box);
+    let canonical_self: &'static ErgoBox = Box::leak(Box::new(
+        ctx.self_box
+            .clone()
+            .with_additional_registers(NonMandatoryRegisters::empty()),
+    ));
+    ctx.self_box = canonical_self;
+    if let Some(i) = self_index {
+        let mut ins: Vec<&'static ErgoBox> = ctx.inputs.iter().copied().collect();
+        ins[i] = canonical_self;
+        ctx.inputs = TxIoVec::from_vec(ins).expect("inputs length unchanged, so still in bounds");
+    }
     ctx.height = 0;
     ctx.data_inputs = None;
     ctx.pre_header.version = activated_version + 1;
@@ -192,12 +227,6 @@ fn build_context_v4(
     let regs =
         NonMandatoryRegisters::new(self_registers).map_err(|e| format!("selfRegisters: {}", e))?;
 
-    // Replace the SELF box registers: clone the template's self_box, apply registers.
-    let new_self: ergotree_ir::chain::ergo_box::ErgoBox =
-        ctx.self_box.clone().with_additional_registers(regs);
-    let new_self: &'static ergotree_ir::chain::ergo_box::ErgoBox = Box::leak(Box::new(new_self));
-    ctx.self_box = new_self;
-
     // Bind var 1 to `input` in the context extension.
     let mut ext = ContextExtension::empty();
     ext.values.insert(1u8, input.into());
@@ -207,6 +236,15 @@ fn build_context_v4(
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
     pin_canonical_context(&mut ctx, activated_version);
+
+    // Replace the SELF box registers AFTER the pin: `pin_canonical_context` clears them to
+    // match the JVM's canonical empty `additionalRegisters`, so applying them before would be
+    // undone. This arm is the one place that deliberately overrides that baseline.
+    let new_self: ergotree_ir::chain::ergo_box::ErgoBox =
+        ctx.self_box.clone().with_additional_registers(regs);
+    let new_self: &'static ergotree_ir::chain::ergo_box::ErgoBox = Box::leak(Box::new(new_self));
+    ctx.self_box = new_self;
+
     Ok(ctx)
 }
 
