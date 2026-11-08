@@ -98,7 +98,8 @@ fn arbitrary_context() -> Context<'static> {
 /// clone. The corpus reads context surfaces (CONTEXT.* / preHeader.*), so these fields
 /// are load-bearing: preHeader{version = activated+1 (block-version convention â script
 /// activation derives from it here), parentId/votes zeroed at wire widths, timestamp 3,
-/// nBits 0, height 0, minerPk = generator}, HEIGHT 0, dataInputs empty. `headers` keeps
+/// nBits 0, height 0, minerPk = generator}, HEIGHT 0, `INPUTS` exactly `[SELF]`,
+/// `OUTPUTS` empty, dataInputs empty. `headers` keeps
 /// the template's value: sigma-rust's `[Header; 10]` cannot express the pinned EMPTY
 /// headers â CONTEXT.headers is a structural divergence by model, not a wiring gap.
 /// SELF carries NO non-mandatory registers.
@@ -111,34 +112,37 @@ fn arbitrary_context() -> Context<'static> {
 /// `arbitrary_context()`, so R4-R9 held proptest-generated values of arbitrary types, and
 /// those three entries graded on a random register rather than on sigma-rust's behaviour.
 ///
-/// `outputs`, `inputs` and `data_inputs` are still template values. No committed vector reads
-/// a register off them today — the same premise that just failed for SELF, so a vector that
-/// reads `OUTPUTS(i).R4` needs this treatment extended before it can be trusted.
+/// `inputs` and `outputs` were template values until 2026-11-08, the same gap one step out:
+/// the proptest template carries TWO inputs and TWO outputs, where §2 says `INPUTS` is
+/// exactly `[SELF]` and `OUTPUTS` is empty. Nothing was red for it — `CONTEXT.selfBoxIndex`
+/// answered 0 only because the template happened to hold SELF at index 0, and
+/// `inputs[1]` was an arbitrary box carrying arbitrary registers. A vector reading
+/// `INPUTS.size`, `INPUTS(1)` or any `OUTPUTS` surface would have graded against proptest
+/// output, which is how SELF's registers failed: not by a red, but by one falsely GREEN.
+/// Both are pinned here now, so the premise is a fact of this function and not of the corpus.
 ///
 /// The v4 arm applies its own SELF registers AFTER calling this, so it is unaffected.
 ///
-/// SELF is swapped into `inputs` at its own index as well. A box's id is a hash over its
-/// serialized form, registers included, so clearing the registers yields a DIFFERENT box —
-/// and `Context.selfBoxIndex` is `inputs.iter().position(|it| *it == ctx.self_box)`
-/// (`scontext.rs:39-43`), a full-value comparison. Replacing `self_box` alone makes SELF
-/// unfindable among the inputs and `CONTEXT.selfBoxIndex` errors, which is what the
-/// raw-actuals diff caught on the first attempt at this fix.
+/// `INPUTS` is `[canonical_self]` — the SAME box VALUE as SELF, not one of equal shape. A
+/// box's id is a hash over its serialized form, registers included, so clearing the registers
+/// yields a DIFFERENT box, and `Context.selfBoxIndex` is
+/// `inputs.iter().position(|it| *it == ctx.self_box)` (`scontext.rs:39-43`), a full-value
+/// comparison. Replacing `self_box` alone makes SELF unfindable among the inputs and
+/// `CONTEXT.selfBoxIndex` errors, which is what the raw-actuals diff caught on the first
+/// attempt at the registers fix.
 fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
     use ergo_chain_types::{ec_point, BlockId, Digest, Votes};
     use ergotree_ir::chain::context::TxIoVec;
     use ergotree_ir::chain::ergo_box::{ErgoBox, NonMandatoryRegisters};
-    let self_index = ctx.inputs.iter().position(|b| **b == *ctx.self_box);
     let canonical_self: &'static ErgoBox = Box::leak(Box::new(
         ctx.self_box
             .clone()
             .with_additional_registers(NonMandatoryRegisters::empty()),
     ));
     ctx.self_box = canonical_self;
-    if let Some(i) = self_index {
-        let mut ins: Vec<&'static ErgoBox> = ctx.inputs.iter().copied().collect();
-        ins[i] = canonical_self;
-        ctx.inputs = TxIoVec::from_vec(ins).expect("inputs length unchanged, so still in bounds");
-    }
+    ctx.inputs = TxIoVec::from_vec(vec![canonical_self])
+        .expect("one input is within TxIoVec's bounds (min 1)");
+    ctx.outputs = &[];
     ctx.height = 0;
     ctx.data_inputs = None;
     ctx.pre_header.version = activated_version + 1;
@@ -569,6 +573,35 @@ mod tests {
             }
             other => panic!("expected Panicked, got {:?}", outcome_name(&other)),
         }
+    }
+
+    /// Contract §2's canonical eval context, on the box surfaces: SELF carries no
+    /// additional registers, `INPUTS` is exactly `[SELF]` (so `selfBoxIndex = 0`),
+    /// `OUTPUTS` is empty and `dataInputs` is empty. Asserted rather than left to
+    /// "no vector reads it" — that premise is what failed for SELF's registers on
+    /// 2026-11-07, two entries red and one falsely green.
+    #[test]
+    fn canonical_context_pins_the_contract_box_surfaces() {
+        let ctx = build_context(None, 3, 2);
+        assert!(
+            ctx.self_box
+                .additional_registers
+                .get(NonMandatoryRegisterId::R4)
+                .is_none(),
+            "SELF.R4 must be ABSENT"
+        );
+        assert_eq!(
+            ctx.inputs.as_vec().len(),
+            1,
+            "INPUTS must be exactly [SELF], one box"
+        );
+        assert_eq!(
+            **ctx.inputs.first(),
+            *ctx.self_box,
+            "INPUTS[0] must be SELF by VALUE (selfBoxIndex is a full-value search)"
+        );
+        assert!(ctx.outputs.is_empty(), "OUTPUTS must be empty");
+        assert!(ctx.data_inputs.is_none(), "dataInputs must be empty");
     }
 
     fn outcome_name(o: &Outcome) -> &'static str {
