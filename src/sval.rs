@@ -14,7 +14,7 @@
 //! never an "excuse" outcome.
 
 use ergotree_ir::mir::constant::{Constant, Literal};
-use ergotree_ir::mir::value::{CollKind, NativeColl, Value};
+use ergotree_ir::mir::value::{CollKind, Value};
 use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_ir::types::stype::SType;
 use serde_json::{json, Value as J};
@@ -191,20 +191,15 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
     })
 }
 
+// A runtime collection, whatever class it is held as: its item type and its items, the same JSON
+// for every form. The canonical encoding (contract §4) is representation-BLIND by design — a
+// specialised and a generic collection of the same items must encode identically, or the runner
+// would leak sigma-rust's internal representation into the actuals and false-red the corpus.
+// Written against the accessors rather than the variants so the representation can grow a case
+// (the shape of the sigma-rust session's forthcoming `CollValue`) without touching this bridge.
 fn encode_coll(coll: &CollKind<Value>) -> Result<J, BridgeError> {
-    match coll {
-        CollKind::NativeColl(NativeColl::CollByte(bytes)) => {
-            let items: Vec<J> = bytes
-                .iter()
-                .map(|b| json!({"kind": "Byte", "value": b}))
-                .collect();
-            Ok(json!({"kind": "Coll", "elem": {"tag": "SByte"}, "items": items}))
-        }
-        CollKind::WrappedColl { elem_tpe, items } => {
-            let arr: Result<Vec<J>, _> = items.iter().map(encode_value).collect();
-            Ok(json!({"kind": "Coll", "elem": encode_stype(elem_tpe), "items": arr?}))
-        }
-    }
+    let arr: Result<Vec<J>, _> = coll.as_vec().iter().map(encode_value).collect();
+    Ok(json!({"kind": "Coll", "elem": encode_stype(&coll.elem_tpe()), "items": arr?}))
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +457,45 @@ mod tests {
             "kind": "Coll",
             "elem": {"tag": "SInt"},
             "items": [{"kind": "Int", "value": 1}, {"kind": "Int", "value": 2}]
+        }));
+    }
+
+    // The three forms below pin that the canonical encoding is representation-BLIND, which is
+    // what `encode_coll` going through the accessors has to preserve: an empty collection still
+    // reports its item type (it has no items to infer one from), a nested one encodes its inner
+    // collections as collections (not flattened — `from_vec_vec`'s concatenation is flatMap's, not
+    // the bridge's), and a collection of pairs keeps the pair shape the specialisation census made
+    // load-bearing (a `PairOfCols` and a plain collection over Tuple2 must encode alike).
+    #[test]
+    fn rt_coll_bytes_empty() {
+        roundtrip(json!({"kind": "Coll", "elem": {"tag": "SByte"}, "items": []}));
+    }
+
+    #[test]
+    fn rt_coll_nested() {
+        roundtrip(json!({
+            "kind": "Coll",
+            "elem": {"tag": "SColl", "elem": {"tag": "SByte"}},
+            "items": [
+                {"kind": "Coll", "elem": {"tag": "SByte"}, "items": [{"kind": "Byte", "value": 1}]},
+                {"kind": "Coll", "elem": {"tag": "SByte"}, "items": []}
+            ]
+        }));
+    }
+
+    #[test]
+    fn rt_coll_of_pairs() {
+        roundtrip(json!({
+            "kind": "Coll",
+            "elem": {"tag": "STuple", "items": [{"tag": "SInt"}, {"tag": "SLong"}]},
+            "items": [
+                {"kind": "Tuple", "items": [
+                    {"kind": "Int", "value": 1}, {"kind": "Long", "value": "2"}
+                ]},
+                {"kind": "Tuple", "items": [
+                    {"kind": "Int", "value": -3}, {"kind": "Long", "value": "-4"}
+                ]}
+            ]
         }));
     }
 
