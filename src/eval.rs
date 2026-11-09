@@ -114,6 +114,15 @@ fn arbitrary_context() -> Context<'static> {
 /// those three entries graded on a random register: #6/#7 red and #3 falsely GREEN, all for
 /// the runner's reason rather than sigma-rust's. dasher and vixen were green throughout.
 ///
+/// The box's OWN fields — `value`, `ergoTree`, `tokens`, `creationHeight`, `transactionId`,
+/// `index` — were template values until 2026-11-09: the THIRD layer of the same box, found the
+/// same way, by a CONTROL row. `SELF.bytes.size` answered 129 where the JVM says 46 and
+/// `SELF.tokens.size` answered 1 where §2 says none, so every vector reading an absolute
+/// property of SELF graded against proptest output. Nothing was red for it before because the
+/// only committed vector touching the box's value is a TAUTOLOGY
+/// (`SELF.R0[Long].getOrElse(…) == SELF.value`). The box is BUILT from §2 now, not cloned, and
+/// each field is asserted in `canonical_context_pins_the_contract_box_surfaces`.
+///
 /// `inputs` and `outputs` were template values until 2026-11-08, the same gap one step out:
 /// the proptest template carries TWO inputs and TWO outputs, where §2 says `INPUTS` is
 /// exactly `[SELF]` and `OUTPUTS` is empty. Nothing was red for it — `CONTEXT.selfBoxIndex`
@@ -133,16 +142,43 @@ fn arbitrary_context() -> Context<'static> {
 /// comparison. Replacing `self_box` alone makes SELF unfindable among the inputs and
 /// `CONTEXT.selfBoxIndex` errors, which is what the raw-actuals diff caught on the first
 /// attempt at the registers fix.
-fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8) {
+fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8, tree: &ErgoTree) {
     use ergo_chain_types::{ec_point, BlockId, Digest, Votes};
     use ergotree_ir::chain::context::{ContextHeaders, TxIoVec};
+    use ergotree_ir::chain::ergo_box::box_value::BoxValue;
     use ergotree_ir::chain::ergo_box::{ErgoBox, NonMandatoryRegisters};
+    use ergotree_ir::chain::tx_id::TxId;
     use ergotree_ir::mir::avl_tree_data::{AvlTreeData, AvlTreeFlags};
-    let canonical_self: &'static ErgoBox = Box::leak(Box::new(
-        ctx.self_box
-            .clone()
-            .with_additional_registers(NonMandatoryRegisters::empty()),
-    ));
+    // BUILT from contract §2, not cloned from the template: the box's own `value`,
+    // `ergoTree`, `tokens`, `creationHeight`, `transactionId` and `index` are canonical
+    // surfaces too, and leaving them at their proptest values was the third instance of the
+    // same mistake (registers 2026-11-07, inputs/outputs 2026-11-08, these 2026-11-09).
+    // `SELF.bytes.size` answered 129 here where the JVM says 46, and `SELF.tokens.size`
+    // answered 1 where §2 says the box carries none.
+    let built = BoxValue::new(1_000_000).ok().and_then(|value| {
+        ErgoBox::new(
+            value,
+            tree.clone(),
+            None, // no tokens
+            NonMandatoryRegisters::empty(),
+            0, // creationHeight
+            TxId::zero(),
+            0, // index
+        )
+        .ok()
+    });
+    let canonical_self: &'static ErgoBox = match built {
+        Some(b) => Box::leak(Box::new(b)),
+        // Unreachable for a parsed tree with a valid value and no tokens. If a future
+        // sigma-rust ever refuses it, degrade to the old template clone rather than panic:
+        // the never-panic contract (§3) outranks this pin, so the entry grades as it did
+        // before the fix rather than as a crash.
+        None => Box::leak(Box::new(
+            ctx.self_box
+                .clone()
+                .with_additional_registers(NonMandatoryRegisters::empty()),
+        )),
+    };
     ctx.self_box = canonical_self;
     ctx.inputs = TxIoVec::from_vec(vec![canonical_self])
         .expect("one input is within TxIoVec's bounds (min 1)");
@@ -178,6 +214,7 @@ fn build_context(
     input: Option<Constant>,
     tree_version: u8,
     activated_version: u8,
+    tree: &ErgoTree,
 ) -> Context<'static> {
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
@@ -190,7 +227,7 @@ fn build_context(
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    pin_canonical_context(&mut ctx, activated_version);
+    pin_canonical_context(&mut ctx, activated_version, tree);
     ctx
 }
 
@@ -201,13 +238,14 @@ fn build_context_v3(
     input_extensions: Vec<ContextExtension>,
     tree_version: u8,
     activated_version: u8,
+    tree: &ErgoTree,
 ) -> Context<'static> {
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
     let empty: &'static ContextExtension = Box::leak(Box::new(ContextExtension::empty()));
     ctx.extension = empty;
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(input_extensions)));
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    pin_canonical_context(&mut ctx, activated_version);
+    pin_canonical_context(&mut ctx, activated_version, tree);
     ctx
 }
 
@@ -224,6 +262,7 @@ fn build_context_v4(
     input: Constant,
     tree_version: u8,
     activated_version: u8,
+    tree: &ErgoTree,
 ) -> Result<Context<'static>, String> {
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
@@ -239,7 +278,7 @@ fn build_context_v4(
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    pin_canonical_context(&mut ctx, activated_version);
+    pin_canonical_context(&mut ctx, activated_version, tree);
 
     // Replace the SELF box registers AFTER the pin: `pin_canonical_context` clears them to
     // match the JVM's canonical empty `additionalRegisters`, so applying them before would be
@@ -261,13 +300,14 @@ fn build_context_v5(
     extension: ContextExtension,
     tree_version: u8,
     activated_version: u8,
+    tree: &ErgoTree,
 ) -> Context<'static> {
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
     let ext: &'static ContextExtension = Box::leak(Box::new(extension));
     ctx.extension = ext;
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    pin_canonical_context(&mut ctx, activated_version);
+    pin_canonical_context(&mut ctx, activated_version, tree);
     ctx
 }
 
@@ -344,7 +384,7 @@ pub fn run_entry(
         #[cfg(not(feature = "jit-cost"))]
         let root = &root_owned;
 
-        let ctx = build_context_v5(ext, tree_version, activated_version);
+        let ctx = build_context_v5(ext, tree_version, activated_version, &tree);
 
         #[cfg(feature = "jit-cost")]
         let constants = match tree.constants() {
@@ -441,7 +481,7 @@ pub fn run_entry(
         #[cfg(not(feature = "jit-cost"))]
         let root = &root_owned;
 
-        let ctx = match build_context_v4(pairs, var1, tree_version, activated_version) {
+        let ctx = match build_context_v4(pairs, var1, tree_version, activated_version, &tree) {
             Ok(c) => c,
             Err(e) => return Outcome::Panicked { note: e },
         };
@@ -537,8 +577,8 @@ pub fn run_entry(
     let root = &root_owned;
 
     let ctx = match input_extensions {
-        Some(exts) => build_context_v3(exts, tree_version, activated_version),
-        None => build_context(input_constant, tree_version, activated_version),
+        Some(exts) => build_context_v3(exts, tree_version, activated_version, &tree),
+        None => build_context(input_constant, tree_version, activated_version, &tree),
     };
 
     // Constant binding differs by impl: with `jit-cost` (eni) the tree keeps
@@ -872,7 +912,29 @@ mod tests {
     /// 2026-11-07, two entries red and one falsely green.
     #[test]
     fn canonical_context_pins_the_contract_box_surfaces() {
-        let ctx = build_context(None, 3, 2);
+        // a minimal parseable tree: v3 + size bit, body = the Coll[Byte] constant 01 02 03
+        let tree =
+            ErgoTree::sigma_parse_bytes_lenient(&[0x0bu8, 0x05, 0x0e, 0x03, 0x01, 0x02, 0x03])
+                .expect("the fixture tree parses");
+        let ctx = build_context(None, 3, 2, &tree);
+        // the box's OWN fields, contract §2 — not the proptest template's (2026-11-09)
+        assert_eq!(
+            ctx.self_box.value.as_u64(),
+            &1_000_000u64,
+            "SELF.value must be 1000000"
+        );
+        assert_eq!(
+            ctx.self_box.ergo_tree, tree,
+            "SELF.ergoTree must be the ENTRY's own tree"
+        );
+        assert!(ctx.self_box.tokens.is_none(), "SELF must carry NO tokens");
+        assert_eq!(ctx.self_box.creation_height, 0, "creationHeight must be 0");
+        assert_eq!(
+            ctx.self_box.transaction_id,
+            ergotree_ir::chain::tx_id::TxId::zero(),
+            "transactionId must be 32 zero bytes"
+        );
+        assert_eq!(ctx.self_box.index, 0, "index must be 0");
         assert!(
             ctx.self_box
                 .additional_registers
