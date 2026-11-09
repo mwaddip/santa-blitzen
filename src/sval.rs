@@ -14,6 +14,7 @@
 //! never an "excuse" outcome.
 
 use ergotree_ir::mir::constant::{Constant, Literal};
+use ergotree_ir::mir::coll_value::CollValue;
 use ergotree_ir::mir::value::{CollKind, Value};
 use ergotree_ir::serialization::SigmaSerializable;
 use ergotree_ir::types::stype::SType;
@@ -195,9 +196,11 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
 // for every form. The canonical encoding (contract §4) is representation-BLIND by design — a
 // specialised and a generic collection of the same items must encode identically, or the runner
 // would leak sigma-rust's internal representation into the actuals and false-red the corpus.
-// Written against the accessors rather than the variants so the representation can grow a case
-// (the shape of the sigma-rust session's forthcoming `CollValue`) without touching this bridge.
-fn encode_coll(coll: &CollKind<Value>) -> Result<J, BridgeError> {
+// Written against the accessors rather than the variants, which is what let the representation
+// grow cases (sigma-rust's `CollValue`, fork PR 75) without touching this body: only the import
+// and the signature moved. `CollKind` stays for the DECODE direction, `Literal::Coll` being
+// unchanged.
+fn encode_coll(coll: &CollValue) -> Result<J, BridgeError> {
     let arr: Result<Vec<J>, _> = coll.as_vec().iter().map(encode_value).collect();
     Ok(json!({"kind": "Coll", "elem": encode_stype(&coll.elem_tpe()), "items": arr?}))
 }
