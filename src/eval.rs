@@ -912,10 +912,14 @@ mod tests {
     /// 2026-11-07, two entries red and one falsely green.
     #[test]
     fn canonical_context_pins_the_contract_box_surfaces() {
-        // a minimal parseable tree: v3 + size bit, body = the Coll[Byte] constant 01 02 03
-        let tree =
-            ErgoTree::sigma_parse_bytes_lenient(&[0x0bu8, 0x05, 0x0e, 0x03, 0x01, 0x02, 0x03])
-                .expect("the fixture tree parses");
+        // a fixture tree that is NOT the template's, so the ergoTree assertion has teeth.
+        // Built from an Expr rather than parsed: both branches have ErgoTree::new, while the
+        // lenient parse entry only exists on one of them (and only under the build patch).
+        let tree = ErgoTree::new(
+            ergotree_ir::ergo_tree::ErgoTreeHeader::v1(false),
+            &ergotree_ir::mir::expr::Expr::Const(1i32.into()),
+        )
+        .expect("the fixture tree is constructible");
         let ctx = build_context(None, 3, 2, &tree);
         // the box's OWN fields, contract §2 — not the proptest template's (2026-11-09)
         assert_eq!(
