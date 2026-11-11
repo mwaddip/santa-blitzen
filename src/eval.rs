@@ -207,6 +207,28 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8, tree
     };
 }
 
+/// The canonical eval context's per-input ContextExtensions: there are NONE.
+///
+/// Contract §2, read off the oracle's own construction: `EvalCore`'s `santa-eval/v1`, `v2`,
+/// `v4` and `v5` builders each pass
+/// `spendingTransaction = ErgoLikeTransaction(IndexedSeq(), IndexedSeq())` — ZERO spending
+/// inputs — while `boxesToSpend` holds the one SELF box. So the top-level `extension` is the
+/// only binding in play and `getVarFromInput(i, _)` is `None` for EVERY `i`.
+///
+/// Serving the top-level extension as input 0's (what this runner did until 2026-11-11) made
+/// the well-formed control `CONTEXT.getVarFromInput[Int](0, 1)` answer `Some(Int 0)` where the
+/// JVM answers `None`, at the same cost 25 — a wrong VALUE rather than a break, and so
+/// invisible except on a row built to read it (`MethodCall.receiver_kind`'s own control).
+/// Fourth instance of the same class: SELF's registers 2026-11-07, `INPUTS`/`OUTPUTS` 11-08,
+/// the box's own fields 11-09.
+///
+/// `santa-eval/v3` is the EXCEPTION — it carries per-input extensions by construction and
+/// builds one spending input per entry extension (`build_context_v3`), with an empty
+/// top-level extension, exactly as `EvalCore.contextWithInputExtensions` does.
+fn no_input_extensions() -> &'static DummyContextExtensionProvider {
+    Box::leak(Box::new(DummyContextExtensionProvider(vec![])))
+}
+
 /// Build a `Context<'static>` with `input` bound at ContextExtension var 1, at the
 /// entry's `(tree_version, activated_version)`. Cloned from the arbitrary template
 /// (impl-agnostic field set); the leaked extension is `'static` (short-lived process).
@@ -224,7 +246,7 @@ fn build_context(
     }
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
     ctx.extension = ext;
-    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
+    ctx.extension_provider = no_input_extensions();
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
     pin_canonical_context(&mut ctx, activated_version, tree);
@@ -275,7 +297,7 @@ fn build_context_v4(
     ext.values.insert(1u8, input.into());
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
     ctx.extension = ext;
-    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
+    ctx.extension_provider = no_input_extensions();
 
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
     pin_canonical_context(&mut ctx, activated_version, tree);
@@ -305,7 +327,7 @@ fn build_context_v5(
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
     let ext: &'static ContextExtension = Box::leak(Box::new(extension));
     ctx.extension = ext;
-    ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(vec![ext.clone()])));
+    ctx.extension_provider = no_input_extensions();
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
     pin_canonical_context(&mut ctx, activated_version, tree);
     ctx
@@ -958,6 +980,85 @@ mod tests {
         );
         assert!(ctx.outputs.is_empty(), "OUTPUTS must be empty");
         assert!(ctx.data_inputs.is_none(), "dataInputs must be empty");
+    }
+
+    /// Contract §2's canonical eval context, on the PER-INPUT extension surface: there is
+    /// none. See `no_input_extensions` for the oracle lines this mirrors. Asserted rather
+    /// than left to "no vector reads it" — that premise has now failed four times, and this
+    /// one failed as a wrong VALUE at the right cost, which no break would have surfaced.
+    #[test]
+    fn canonical_context_binds_no_per_input_extension() {
+        use ergotree_ir::chain::context::ContextExtensionProvider;
+
+        let tree = ErgoTree::new(
+            ergotree_ir::ergo_tree::ErgoTreeHeader::v1(false),
+            &ergotree_ir::mir::expr::Expr::Const(1i32.into()),
+        )
+        .expect("the fixture tree is constructible");
+        let var1: Constant = 7i32.into();
+
+        // v1/v2 — `input` at the top level, nothing per-input.
+        let ctx = build_context(Some(var1.clone()), 3, 2, &tree);
+        assert!(
+            ctx.extension.values.contains_key(&1u8),
+            "v2: the top-level extension must bind var 1"
+        );
+        for i in 0..3usize {
+            assert!(
+                ctx.extension_provider.context_extension(i).is_none(),
+                "v2: input {} must carry NO ContextExtension (getVarFromInput is None)",
+                i
+            );
+        }
+
+        // v4 — the same, plus SELF's registers.
+        let ctx = build_context_v4(
+            vec![(NonMandatoryRegisterId::R4, 1i32.into())],
+            var1.clone(),
+            3,
+            2,
+            &tree,
+        )
+        .expect("the v4 context builds");
+        assert!(
+            ctx.extension.values.contains_key(&1u8),
+            "v4: the top-level extension must bind var 1"
+        );
+        assert!(
+            ctx.extension_provider.context_extension(0).is_none(),
+            "v4: input 0 must carry NO ContextExtension"
+        );
+
+        // v5 — a full top-level extension, still nothing per-input.
+        let mut ext = ContextExtension::empty();
+        ext.values.insert(0u8, var1.clone().into());
+        let ctx = build_context_v5(ext, 3, 2, &tree);
+        assert!(
+            ctx.extension.values.contains_key(&0u8),
+            "v5: the entry's top-level extension must be served verbatim"
+        );
+        assert!(
+            ctx.extension_provider.context_extension(0).is_none(),
+            "v5: input 0 must carry NO ContextExtension"
+        );
+
+        // v3 — the exception, and it must keep working: one spending input per entry
+        // extension, with an EMPTY top-level extension.
+        let mut inp = ContextExtension::empty();
+        inp.values.insert(1u8, var1.into());
+        let ctx = build_context_v3(vec![inp], 3, 2, &tree);
+        assert!(
+            ctx.extension.values.is_empty(),
+            "v3: the top-level extension is empty (getVar is not used there)"
+        );
+        assert!(
+            ctx.extension_provider.context_extension(0).is_some(),
+            "v3: input 0 MUST carry its entry's extension"
+        );
+        assert!(
+            ctx.extension_provider.context_extension(1).is_none(),
+            "v3: only the one input given an extension has one"
+        );
     }
 
     fn outcome_name(o: &Outcome) -> &'static str {
