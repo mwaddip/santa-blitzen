@@ -175,9 +175,12 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             json!({"kind": "Header", "bytes_hex": hex_lower(&bytes)})
         }
         Value::Coll(coll) => encode_coll(coll)?,
-        Value::Tup(items) => {
-            let arr: Result<Vec<J>, _> = items.iter().map(encode_value).collect();
-            json!({"kind": "Tuple", "items": arr?})
+        // A pair is the only tuple VALUE the evaluator holds (fork `Value::Pair`, master
+        // a7656774 / fork PR 77); a tuple of any other count is a collection of `Any` and
+        // takes the `Coll` arm above, where `encode_coll` writes `elem` = `SAny`. The
+        // constant decoder keeps `Literal::Tup` at every arity (`:349`): data is unchanged.
+        Value::Pair(pair) => {
+            json!({"kind": "Tuple", "items": [encode_value(&pair.0)?, encode_value(&pair.1)?]})
         }
         Value::Opt(opt) => match opt {
             Some(inner) => json!({"kind": "Option", "value": encode_value(inner)?}),
