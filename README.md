@@ -42,7 +42,11 @@ branch (SANTA runner-contract §3 — build identity is declared):
   a lenient-parse patch to the checkout at build time. It adds the helper and a
   thread-local flag that only the helper sets; the one root-type check in the
   tree-body parse reads it, and nothing else in the parse changes. So production
-  parsing behaves exactly as the checkout's own. There is one variant per upstream
+  parsing behaves exactly as the checkout's own. The helper reads like the box and
+  transaction parser, not like `sigma_parse_bytes`: since upstream #1008 the latter
+  keeps an unsized tree it cannot parse as `Unparsed` (for loading JSON and
+  addresses), where sigma-state's `deserializeErgoTree` throws, so the helper does
+  its own reader parse and an unsized tree that does not parse is an error. There is one variant per upstream
   shape of that function, picked by what the checkout contains:
   `patches/sigma-rust-lenient-parse-body.patch` for `sigma_parse_body` (the
   wire-parse-conformance fold) and `patches/sigma-rust-lenient-parse-sized.patch`
