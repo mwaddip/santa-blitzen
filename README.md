@@ -46,11 +46,9 @@ branch (SANTA runner-contract §3 — build identity is declared):
   transaction parser, not like `sigma_parse_bytes`: since upstream #1008 the latter
   keeps an unsized tree it cannot parse as `Unparsed` (for loading JSON and
   addresses), where sigma-state's `deserializeErgoTree` throws, so the helper does
-  its own reader parse and an unsized tree that does not parse is an error. There is one variant per upstream
-  shape of that function, picked by what the checkout contains:
-  `patches/sigma-rust-lenient-parse-body.patch` for `sigma_parse_body` (the
-  wire-parse-conformance fold) and `patches/sigma-rust-lenient-parse-sized.patch`
-  for `sigma_parse_sized` (develop before it; retire it once the fold merges). The
+  its own reader parse and an unsized tree that does not parse is an error. The patch is
+  `patches/sigma-rust-lenient-parse-body.patch`, written against `sigma_parse_body`
+  (the wire-parse-conformance fold, upstream since #927). The
   checkout is restored pristine after every run (EXIT trap; healed on entry after a
   crash). The patch retires when the helper + Rule-1012 PR
   (`fix/header-size-bit-rule1012`) merges to develop.

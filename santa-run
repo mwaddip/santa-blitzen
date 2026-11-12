@@ -25,10 +25,8 @@ ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
 # patches the checkout. The patch adds ErgoTree::sigma_parse_bytes_lenient (eval.rs's
 # parse entry) and a thread-local flag that only that entry sets; the one root-type
 # check in the tree-body parse reads it. The parse logic itself is untouched, so
-# production parsing behaves exactly as the checkout's own. There is one variant per
-# upstream shape of that function, picked by what the checkout contains: -body for
-# sigma_parse_body (the wire-parse-conformance fold), -sized for sigma_parse_sized
-# (develop before it). Retire -sized once the fold merges. Unlike the retired
+# production parsing behaves exactly as the checkout's own. It is written against
+# sigma_parse_body (the wire-parse-conformance fold, upstream since #927). Unlike the retired
 # byte-munging lenient_tree_bytes, it parses the REAL header, so size-bit
 # semantics (Rule-1012) are preserved. conform's checkout step is a plain
 # `git checkout` (no -f), so the tree MUST be pristine again afterwards: heal any
@@ -36,12 +34,7 @@ ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
 # touches one tracked file, adds none).
 restore() { git -C "$impl/sigma-rust" checkout -q -- .; }
 restore   # heal a crashed previous run before applying afresh
-if grep -q 'fn sigma_parse_body' "$impl/sigma-rust/ergotree-ir/src/ergo_tree.rs"; then
-  patch="$here/patches/sigma-rust-lenient-parse-body.patch"
-else
-  patch="$here/patches/sigma-rust-lenient-parse-sized.patch"
-fi
-git -C "$impl/sigma-rust" apply "$patch"
+git -C "$impl/sigma-rust" apply "$here/patches/sigma-rust-lenient-parse-body.patch"
 trap restore EXIT
 cargo build --release --manifest-path "$here/Cargo.toml" >/dev/null
 "$here/target/release/blitzen" emit "$2" "$3"
