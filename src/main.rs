@@ -15,6 +15,7 @@
 //! structural equality — which matches the §5 match (objects key-order-insensitive,
 //! arrays order-sensitive, numbers numeric, strings exact, null==null).
 
+mod binding;
 mod eval;
 mod nipopow;
 mod preheader;

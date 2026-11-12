@@ -24,10 +24,12 @@ use ergotree_ir::chain::context::Context;
 use ergotree_ir::chain::context_extension::ContextExtension;
 use ergotree_ir::chain::ergo_box::NonMandatoryRegisterId;
 use ergotree_ir::chain::ergo_box::NonMandatoryRegisters;
+use ergotree_ir::chain::ergo_box::RegisterValue;
+use ergotree_ir::chain::evaluated_value::EvaluatedValue;
 use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
-use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
 
+use crate::binding;
 use crate::sval;
 
 /// One entry's outcome, per the runner contract §3.
@@ -233,7 +235,7 @@ fn no_input_extensions() -> &'static DummyContextExtensionProvider {
 /// entry's `(tree_version, activated_version)`. Cloned from the arbitrary template
 /// (impl-agnostic field set); the leaked extension is `'static` (short-lived process).
 fn build_context(
-    input: Option<Constant>,
+    input: Option<EvaluatedValue>,
     tree_version: u8,
     activated_version: u8,
     tree: &ErgoTree,
@@ -241,8 +243,8 @@ fn build_context(
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
     let mut ext = ContextExtension::empty();
-    if let Some(c) = input {
-        ext.values.insert(1u8, c.into());
+    if let Some(v) = input {
+        ext.values.insert(1u8, v);
     }
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
     ctx.extension = ext;
@@ -274,14 +276,15 @@ fn build_context_v3(
 /// Build a `Context<'static>` for santa-eval/v4: the SELF box carries custom non-mandatory
 /// registers (R4-R9 from `self_registers`), and `input` is bound at ContextExtension var 1.
 ///
-/// `self_registers` maps "4"-"9" string keys to decoded `Constant`s (same as
-/// `sval::decode_constant` output). The registers must be densely packed from R4 — a gap
-/// (e.g. R4 + R6, missing R5) is rejected by `NonMandatoryRegisters::new` and bubbles up as
-/// `Panicked`. The SELF box from the template is cloned and its registers replaced via
+/// `self_registers` maps R4-R9 to their `RegisterValue`s (`binding::register_binding` output: an
+/// SValue's constant, or what sigma-rust's register reader built from a `Value`'s bytes). The
+/// registers must be densely packed from R4 — a gap (e.g. R4 + R6, missing R5) is rejected by
+/// `NonMandatoryRegisters`' conversion and bubbles up as `Panicked`. The SELF box from the
+/// template is cloned and its registers replaced via
 /// `with_additional_registers` (gated behind `arbitrary`, always enabled for blitzen).
 fn build_context_v4(
-    self_registers: Vec<(NonMandatoryRegisterId, Constant)>,
-    input: Constant,
+    self_registers: Vec<(NonMandatoryRegisterId, RegisterValue)>,
+    input: EvaluatedValue,
     tree_version: u8,
     activated_version: u8,
     tree: &ErgoTree,
@@ -289,12 +292,16 @@ fn build_context_v4(
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
     // Build NonMandatoryRegisters (densely packed from R4 upwards).
-    let regs =
-        NonMandatoryRegisters::new(self_registers).map_err(|e| format!("selfRegisters: {}", e))?;
+    let regs = NonMandatoryRegisters::try_from(
+        self_registers
+            .into_iter()
+            .collect::<std::collections::HashMap<NonMandatoryRegisterId, RegisterValue>>(),
+    )
+    .map_err(|e| format!("selfRegisters: {}", e))?;
 
     // Bind var 1 to `input` in the context extension.
     let mut ext = ContextExtension::empty();
-    ext.values.insert(1u8, input.into());
+    ext.values.insert(1u8, input);
     let ext: &'static ContextExtension = Box::leak(Box::new(ext));
     ctx.extension = ext;
     ctx.extension_provider = no_input_extensions();
@@ -381,9 +388,9 @@ pub fn run_entry(
                 Ok(id) => id,
                 Err(_) => return Outcome::Errored,
             };
-            match sval::decode_constant(v) {
-                Ok(c) => {
-                    ext.values.insert(id, c.into());
+            match binding::extension_binding(v, activated_version) {
+                Ok(ev) => {
+                    ext.values.insert(id, ev);
                 }
                 Err(e) => return decode_failure_outcome(e, "v5 extension decode"),
             }
@@ -447,12 +454,13 @@ pub fn run_entry(
                 }
             }
         };
-        let var1 = match sval::decode_constant(input_json) {
-            Ok(c) => c,
+        let var1 = match binding::extension_binding(input_json, activated_version) {
+            Ok(v) => v,
             Err(e) => return decode_failure_outcome(e, "v4 input decode"),
         };
-        // Decode selfRegisters: "4"-"9" → (NonMandatoryRegisterId, Constant), sorted by id.
-        let mut pairs: Vec<(NonMandatoryRegisterId, Constant)> = Vec::with_capacity(reg_map.len());
+        // Decode selfRegisters: "4"-"9" → (NonMandatoryRegisterId, RegisterValue), sorted by id.
+        let mut pairs: Vec<(NonMandatoryRegisterId, RegisterValue)> =
+            Vec::with_capacity(reg_map.len());
         for (k, v) in reg_map {
             let id: u8 = match k.parse() {
                 Ok(n) => n,
@@ -475,8 +483,8 @@ pub fn run_entry(
                     }
                 }
             };
-            match sval::decode_constant(v) {
-                Ok(c) => pairs.push((reg_id, c)),
+            match binding::register_binding(v, activated_version) {
+                Ok(rv) => pairs.push((reg_id, rv)),
                 Err(e) => {
                     return decode_failure_outcome(e, &format!("v4 selfRegisters[{}] decode", k))
                 }
@@ -539,14 +547,14 @@ pub fn run_entry(
     // REFUSING the input bytes (try_from/parse — its verdict on oracle-blessed material)
     // is a real divergence ⇒ `errored`; a SANTA-side bridge failure (malformed JSON,
     // unsupported kind) is the runner's own ⇒ `panicked` with the cause in `note`.
-    let input_constant = match input {
-        Some(j) => match sval::decode_constant(j) {
-            Ok(c) => Some(c),
+    let input_value = match input {
+        Some(j) => match binding::extension_binding(j, activated_version) {
+            Ok(v) => Some(v),
             Err(e) => return decode_failure_outcome(e, "input decode"),
         },
         None => None,
     };
-    // v3 (getVarFromInput): per-input ContextExtensions — one {varId -> Constant} map per
+    // v3 (getVarFromInput): per-input ContextExtensions — one {varId -> binding} map per
     // spending-tx input, read by index. Present ⇒ a v3 entry (build_context_v3 below).
     let input_extensions: Option<Vec<ContextExtension>> = match inputs {
         Some(arr) => {
@@ -559,9 +567,9 @@ pub fn run_entry(
                             Ok(id) => id,
                             Err(_) => return Outcome::Errored,
                         };
-                        match sval::decode_constant(v) {
-                            Ok(c) => {
-                                ext.values.insert(id, c.into());
+                        match binding::extension_binding(v, activated_version) {
+                            Ok(ev) => {
+                                ext.values.insert(id, ev);
                             }
                             Err(e) => return decode_failure_outcome(e, "input decode (v3)"),
                         }
@@ -600,7 +608,7 @@ pub fn run_entry(
 
     let ctx = match input_extensions {
         Some(exts) => build_context_v3(exts, tree_version, activated_version, &tree),
-        None => build_context(input_constant, tree_version, activated_version, &tree),
+        None => build_context(input_value, tree_version, activated_version, &tree),
     };
 
     // Constant binding differs by impl: with `jit-cost` (eni) the tree keeps
@@ -768,7 +776,9 @@ fn build_context_v6_fullctx(
     };
 
     // Per-input ContextExtensions (getVarFromInput by index). The SELF input's extension
-    // is also the top-level `ctx.extension`; the provider serves every input by index.
+    // is also the top-level `ctx.extension`; the provider serves every input by index. A
+    // `Value` binding is read at the activated version this context takes (below).
+    let read_activated = activated_version.unwrap_or_else(|| phf.version.wrapping_sub(1));
     let mut input_extensions: Vec<ContextExtension> = Vec::new();
     if let Some(arr) = obj.get("input_extensions").and_then(|v| v.as_array()) {
         for (i, item) in arr.iter().enumerate() {
@@ -778,7 +788,7 @@ fn build_context_v6_fullctx(
                     let id: u8 = k.parse().map_err(|_| {
                         FullCtxError::Malformed(format!("input_extensions[{i}] bad key {k:?}"))
                     })?;
-                    let c = sval::decode_constant(v).map_err(|e| match e {
+                    let ev = binding::extension_binding(v, read_activated).map_err(|e| match e {
                         sval::BridgeError::Refused(m) => {
                             FullCtxError::Refused(format!("input_extensions[{i}][{k}]: {m}"))
                         }
@@ -786,7 +796,7 @@ fn build_context_v6_fullctx(
                             "input_extensions[{i}][{k}]: {other:?}"
                         )),
                     })?;
-                    ext.values.insert(id, c.into());
+                    ext.values.insert(id, ev);
                 }
             }
             input_extensions.push(ext);
@@ -909,6 +919,7 @@ pub fn run_entry_fullctx(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ergotree_ir::mir::constant::Constant;
 
     /// The decode-failure contract split: a library refusal is `errored` (the
     /// impl's verdict on oracle-blessed input — a gradeable divergence); any
@@ -998,7 +1009,7 @@ mod tests {
         let var1: Constant = 7i32.into();
 
         // v1/v2 — `input` at the top level, nothing per-input.
-        let ctx = build_context(Some(var1.clone()), 3, 2, &tree);
+        let ctx = build_context(Some(var1.clone().into()), 3, 2, &tree);
         assert!(
             ctx.extension.values.contains_key(&1u8),
             "v2: the top-level extension must bind var 1"
@@ -1013,8 +1024,8 @@ mod tests {
 
         // v4 — the same, plus SELF's registers.
         let ctx = build_context_v4(
-            vec![(NonMandatoryRegisterId::R4, 1i32.into())],
-            var1.clone(),
+            vec![(NonMandatoryRegisterId::R4, RegisterValue::Parsed(1i32.into()))],
+            var1.clone().into(),
             3,
             2,
             &tree,
