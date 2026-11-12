@@ -28,6 +28,7 @@ use ergotree_ir::ergo_tree::{ErgoTree, ErgoTreeVersion};
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::mir::value::Value;
 
+use crate::binding;
 use crate::sval;
 
 /// One entry's outcome, per the runner contract §3.
@@ -257,13 +258,13 @@ fn build_context_v3(
 /// Build a `Context<'static>` for santa-eval/v4: the SELF box carries custom non-mandatory
 /// registers (R4-R9 from `self_registers`), and `input` is bound at ContextExtension var 1.
 ///
-/// `self_registers` maps "4"-"9" string keys to decoded `Constant`s (same as
-/// `sval::decode_constant` output). The registers must be densely packed from R4 — a gap
-/// (e.g. R4 + R6, missing R5) is rejected by `NonMandatoryRegisters::new` and bubbles up as
-/// `Panicked`. The SELF box from the template is cloned and its registers replaced via
+/// `self_registers` is SELF's register map as `binding::register_map` built it (from the
+/// constants, or by sigma-rust's register reader when a `Value` is among them; a gap in the
+/// registers is refused there and surfaces as `Panicked`). The SELF box from the
+/// template is cloned and its registers replaced via
 /// `with_additional_registers` (gated behind `arbitrary`, always enabled for blitzen).
 fn build_context_v4(
-    self_registers: Vec<(NonMandatoryRegisterId, Constant)>,
+    self_registers: NonMandatoryRegisters,
     input: Constant,
     tree_version: u8,
     activated_version: u8,
@@ -272,8 +273,7 @@ fn build_context_v4(
     let mut ctx = CONTEXT_TEMPLATE.with(|t| t.clone());
 
     // Build NonMandatoryRegisters (densely packed from R4 upwards).
-    let regs =
-        NonMandatoryRegisters::new(self_registers).map_err(|e| format!("selfRegisters: {}", e))?;
+    let regs = self_registers;
 
     // Bind var 1 to `input` in the context extension.
     let mut ext = ContextExtension::empty();
@@ -364,7 +364,7 @@ pub fn run_entry(
                 Ok(id) => id,
                 Err(_) => return Outcome::Errored,
             };
-            match sval::decode_constant(v) {
+            match binding::extension_binding(v, activated_version) {
                 Ok(c) => {
                     ext.values.insert(id, c);
                 }
@@ -430,12 +430,14 @@ pub fn run_entry(
                 }
             }
         };
-        let var1 = match sval::decode_constant(input_json) {
+        let var1 = match binding::extension_binding(input_json, activated_version) {
             Ok(c) => c,
             Err(e) => return decode_failure_outcome(e, "v4 input decode"),
         };
-        // Decode selfRegisters: "4"-"9" → (NonMandatoryRegisterId, Constant), sorted by id.
-        let mut pairs: Vec<(NonMandatoryRegisterId, Constant)> = Vec::with_capacity(reg_map.len());
+        // Collect selfRegisters: "4"-"9" → (NonMandatoryRegisterId, binding JSON), sorted by id,
+        // then read them as one map (`binding::register_map`).
+        let mut pairs: Vec<(NonMandatoryRegisterId, &serde_json::Value)> =
+            Vec::with_capacity(reg_map.len());
         for (k, v) in reg_map {
             let id: u8 = match k.parse() {
                 Ok(n) => n,
@@ -458,15 +460,14 @@ pub fn run_entry(
                     }
                 }
             };
-            match sval::decode_constant(v) {
-                Ok(c) => pairs.push((reg_id, c)),
-                Err(e) => {
-                    return decode_failure_outcome(e, &format!("v4 selfRegisters[{}] decode", k))
-                }
-            }
+            pairs.push((reg_id, v));
         }
         // Sort by register id (R4 < R5 < … < R9) to ensure dense packing order.
         pairs.sort_by_key(|(rid, _)| *rid as u8);
+        let regs = match binding::register_map(&pairs, activated_version) {
+            Ok(r) => r,
+            Err(e) => return decode_failure_outcome(e, "v4 selfRegisters decode"),
+        };
 
         // Parse the tree before building context (lenient: build-patched entry, see above).
         let tree = match ErgoTree::sigma_parse_bytes_lenient(tree_bytes) {
@@ -486,7 +487,7 @@ pub fn run_entry(
         #[cfg(not(feature = "jit-cost"))]
         let root = &root_owned;
 
-        let ctx = match build_context_v4(pairs, var1, tree_version, activated_version, &tree) {
+        let ctx = match build_context_v4(regs, var1, tree_version, activated_version, &tree) {
             Ok(c) => c,
             Err(e) => return Outcome::Panicked { note: e },
         };
@@ -523,13 +524,13 @@ pub fn run_entry(
     // is a real divergence ⇒ `errored`; a SANTA-side bridge failure (malformed JSON,
     // unsupported kind) is the runner's own ⇒ `panicked` with the cause in `note`.
     let input_constant = match input {
-        Some(j) => match sval::decode_constant(j) {
+        Some(j) => match binding::extension_binding(j, activated_version) {
             Ok(c) => Some(c),
             Err(e) => return decode_failure_outcome(e, "input decode"),
         },
         None => None,
     };
-    // v3 (getVarFromInput): per-input ContextExtensions — one {varId -> Constant} map per
+    // v3 (getVarFromInput): per-input ContextExtensions — one {varId -> binding} map per
     // spending-tx input, read by index. Present ⇒ a v3 entry (build_context_v3 below).
     let input_extensions: Option<Vec<ContextExtension>> = match inputs {
         Some(arr) => {
@@ -542,7 +543,7 @@ pub fn run_entry(
                             Ok(id) => id,
                             Err(_) => return Outcome::Errored,
                         };
-                        match sval::decode_constant(v) {
+                        match binding::extension_binding(v, activated_version) {
                             Ok(c) => {
                                 ext.values.insert(id, c);
                             }
@@ -723,7 +724,8 @@ mod tests {
 
         // v4 — the same, plus SELF's registers.
         let ctx = build_context_v4(
-            vec![(NonMandatoryRegisterId::R4, 1i32.into())],
+            NonMandatoryRegisters::new(vec![(NonMandatoryRegisterId::R4, 1i32.into())])
+                .expect("one register"),
             var1.clone(),
             3,
             2,
