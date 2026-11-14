@@ -129,8 +129,11 @@ pub fn decode_stype(j: &J) -> Result<SType, BridgeError> {
                 .map(decode_stype)
                 .collect::<Result<_, _>>()?;
             SType::STuple(
+                // `.into()`: the variant holds the tuple type itself, or an `Arc` of it
+                // (fork `master` from its shared-types commit); this compiles against both
                 STuple::try_from(items)
-                    .map_err(|e| BridgeError::Decode(format!("STuple arity: {:?}", e)))?,
+                    .map_err(|e| BridgeError::Decode(format!("STuple arity: {:?}", e)))?
+                    .into(),
             )
         }
         other => {
@@ -354,7 +357,7 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
             let tpe_items = TupleItems::try_from(tpes)
                 .map_err(|e| BridgeError::Decode(format!("Tuple type arity: {:?}", e)))?;
             lit(
-                SType::STuple(STuple { items: tpe_items }),
+                SType::STuple(STuple { items: tpe_items }.into()),
                 Literal::Tup(lit_items),
             )
         }
