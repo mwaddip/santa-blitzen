@@ -164,7 +164,13 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             json!({"kind": "SigmaProp", "raw_hex": ser_bytes(sp.value(), "SigmaProp")?})
         }
         Value::CBox(b) => json!({"kind": "Box", "bytes_hex": ser_bytes(&**b, "Box")?}),
-        Value::AvlTree(a) => json!({"kind": "AvlTree", "bytes_hex": ser_bytes(&**a, "AvlTree")?}),
+        Value::AvlTree(a) => {
+            // A runtime tree holds its digest as a collection; only a digest of bytes is data
+            // (sigma-rust `AvlTreeData::try_from`), any other has no canonical encoding.
+            let data = ergotree_ir::mir::avl_tree_data::AvlTreeData::try_from((**a).clone())
+                .map_err(|e| BridgeError::Encode(format!("AvlTree: {:?}", e)))?;
+            json!({"kind": "AvlTree", "bytes_hex": ser_bytes(&data, "AvlTree")?})
+        }
         Value::Header(h) => {
             // Mirror of the decode arm: Header rides Scorex serialization (not
             // SigmaSerializable) — {kind:"Header", bytes_hex} like the JVM encoder.
