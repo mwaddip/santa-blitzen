@@ -166,7 +166,14 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             // NOT `prop_bytes()` — which wraps it in an ErgoTree (spurious `0008` header).
             json!({"kind": "SigmaProp", "raw_hex": ser_bytes(sp.value(), "SigmaProp")?})
         }
-        Value::CBox(b) => json!({"kind": "Box", "bytes_hex": ser_bytes(&**b, "Box")?}),
+        Value::CBox(b) => {
+            // The JVM's value is `ebox.bytes`: the slice the box was parsed from (or the box as
+            // ergo writes one it builds). The fork keeps that slice as `ErgoBox::bytes()`, which
+            // `Box.bytes` surfaces; writing the box again would give other bytes for a box read
+            // from non-canonical bytes, and fail for one whose contents cannot be written.
+            let bytes = b.bytes().map_err(|e| BridgeError::Encode(format!("Box bytes: {:?}", e)))?;
+            json!({"kind": "Box", "bytes_hex": hex_lower(&bytes)})
+        }
         Value::AvlTree(a) => {
             // A runtime tree holds its digest as a collection; only a digest of bytes is data
             // (sigma-rust `AvlTreeData::try_from`), any other has no canonical encoding.
@@ -414,6 +421,21 @@ mod tests {
         let v = Value::from(c.v);
         let back = encode_value(&v).expect("encode");
         assert_eq!(back, j, "round-trip mismatch");
+    }
+
+    /// A Box value is the bytes the box was read from (the JVM's `ebox.bytes`, the fork's
+    /// `ErgoBox::bytes()`), not the box written again. Both boxes name a type variable whose
+    /// text the reader builds from FF bytes (each one U+FFFD): written back, the 255-byte text
+    /// becomes EF BF BD x 85, and the 256-byte one cannot be written (its length is past a u8).
+    /// From SANTA's `Global.deserializeTo_Box_type_var_name_range` `just` rows.
+    #[test]
+    fn rt_box_is_its_bytes_as_read() {
+        let ff85 = "c0843d00d193b183006755".to_string() + &"ff".repeat(85)
+            + "0400010000" + &"11".repeat(32) + "00";
+        let mix256 = "c0843d0b8702d193b1830067fe".to_string() + &"61".repeat(253) + "ff"
+            + "0400010000" + &"11".repeat(32) + "00";
+        roundtrip(json!({"kind": "Box", "bytes_hex": ff85}));
+        roundtrip(json!({"kind": "Box", "bytes_hex": mix256}));
     }
 
     #[test]
