@@ -37,4 +37,4 @@ restore   # heal a crashed previous run before applying afresh
 git -C "$impl/sigma-rust" apply "$here/patches/sigma-rust-lenient-parse-body.patch"
 trap restore EXIT
 cargo build --release --manifest-path "$here/Cargo.toml" >/dev/null
-"$here/target/release/blitzen" emit "$2" "$3"
+${SANTA_BOUND:+"$SANTA_BOUND"} "$here/target/release/blitzen" emit "$2" "$3"
