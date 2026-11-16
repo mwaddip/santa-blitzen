@@ -86,6 +86,12 @@ thread_local! {
     static CONTEXT_TEMPLATE: Context<'static> = arbitrary_context();
 }
 
+/// Contract §2's cost limit: the evaluator's default, `scriptCostLimitInEvaluator` = 1,000,000
+/// block units = 10,000,000 JIT units, from an initial cost of 0, on every arm (the oracle's
+/// `EvalCore`, `DefaultEvalSettings`). Set on every context the runner builds, never inherited
+/// from the template, whose value is whatever proptest drew.
+const EVAL_JIT_COST_LIMIT: u64 = 10_000_000;
+
 fn arbitrary_context() -> Context<'static> {
     use proptest::prelude::any;
     use proptest::strategy::{Strategy, ValueTree};
@@ -187,6 +193,7 @@ fn pin_canonical_context(ctx: &mut Context<'static>, activated_version: u8, tree
     ctx.outputs = &[];
     ctx.height = 0;
     ctx.data_inputs = None;
+    ctx.jit_cost_limit = Some(EVAL_JIT_COST_LIMIT);
     ctx.pre_header.version = activated_version + 1;
     // sigma-rust's context carries the activated script version as a field of its own, as
     // sigmastate's `ErgoLikeContext` does: the pre-header's version does not set it.
@@ -846,7 +853,7 @@ fn build_context_v6_fullctx(
     ctx.extension = Box::leak(Box::new(self_ext));
     ctx.extension_provider = Box::leak(Box::new(DummyContextExtensionProvider(input_extensions)));
     ctx.tree_version.set(ErgoTreeVersion::from(tree_version));
-    ctx.jit_cost_limit = None;
+    ctx.jit_cost_limit = Some(EVAL_JIT_COST_LIMIT);
     ctx.reset_jit_cost();
     Ok(ctx)
 }
@@ -991,6 +998,39 @@ mod tests {
         );
         assert!(ctx.outputs.is_empty(), "OUTPUTS must be empty");
         assert!(ctx.data_inputs.is_none(), "dataInputs must be empty");
+    }
+
+    /// Contract §2's cost limit, on every arm: the evaluator's default, 10,000,000 JIT units.
+    /// Set, never inherited from the template: with none at all, `Global.serialize` writes past
+    /// the limit answered as values at 16 to 67 million (2026-11-16, `Global.serialize_shared_nested`;
+    /// the fifth instance of the template class). The full-context arm builds its own context,
+    /// so it is read off a captured envelope (`testdata/`, SANTA's
+    /// `vectors/eval/v6/captured/h210129-6c51f301c418.json`).
+    #[test]
+    fn canonical_context_pins_the_cost_limit() {
+        assert_eq!(EVAL_JIT_COST_LIMIT, 10_000_000);
+        let want = Some(EVAL_JIT_COST_LIMIT);
+        let tree = ErgoTree::new(
+            ergotree_ir::ergo_tree::ErgoTreeHeader::v1(false),
+            &ergotree_ir::mir::expr::Expr::Const(1i32.into()),
+        )
+        .expect("the fixture tree is constructible");
+        let var1: Constant = 7i32.into();
+        let v2 = build_context(Some(var1.clone().into()), 3, 3, &tree);
+        assert_eq!(v2.jit_cost_limit, want, "v2");
+        let v3 = build_context_v3(vec![], 3, 3, &tree);
+        assert_eq!(v3.jit_cost_limit, want, "v3");
+        let v4 = build_context_v4(vec![], var1.into(), 3, 3, &tree).expect("the v4 context builds");
+        assert_eq!(v4.jit_cost_limit, want, "v4");
+        let v5 = build_context_v5(ContextExtension::empty(), 3, 3, &tree);
+        assert_eq!(v5.jit_cost_limit, want, "v5");
+        let envelope: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/fullctx-h210129.json"))
+                .expect("the fixture parses");
+        let full = build_context_v6_fullctx(&envelope["entries"][0]["context"], 3, Some(3))
+            .ok()
+            .expect("the captured context builds");
+        assert_eq!(full.jit_cost_limit, want, "v6-fullctx");
     }
 
     /// Contract §2's canonical eval context, on the PER-INPUT extension surface: there is
