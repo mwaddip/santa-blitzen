@@ -32,4 +32,4 @@ ln -sfn "$impl/sigma-rust" "$here/../sigma-rust"
 # runner still applies patches/sigma-rust-lenient-parse.patch (see that branch) until
 # the helper + Rule-1012 PR merges upstream.
 cargo build --release --features jit-cost --manifest-path "$here/Cargo.toml" >/dev/null
-"$here/target/release/blitzen" emit "$2" "$3"
+${SANTA_BOUND:+"$SANTA_BOUND"} "$here/target/release/blitzen" emit "$2" "$3"
