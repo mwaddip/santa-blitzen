@@ -3,4 +3,5 @@
 # rustup-delegated by mise's core backend. Per-branch (develop/eni), so the two forks can
 # pin different rust versions independently.
 [tools]
-rust = "1.92.0"
+# develop: sigma-rust's own toolchain (its rust-toolchain file), so the runner and the repo build alike.
+rust = "1.91.1"
