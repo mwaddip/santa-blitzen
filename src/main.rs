@@ -56,41 +56,56 @@ fn panic_note(p: Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
-/// Run one entry's eval under a panic net (never-panic, runner contract §3): an otherwise-uncaught
-/// panic becomes the `panicked` outcome (coal, message in `note`) so the run continues. The
-/// closure asserts unwind-safety at the call site (it only reads borrowed vector data).
-fn caught_actual<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
-    match std::panic::catch_unwind(f) {
+/// Run one entry under a panic net (runner contract §3: never panic): a panic becomes the tier's
+/// `panicked` actual, built by `panicked` from the panic's message, and the run goes on. The
+/// closures only read the vector, so asserting unwind-safety is sound.
+fn caught(f: impl FnOnce() -> J, panicked: fn(String) -> J) -> J {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(j) => j,
-        Err(p) => {
-            let note = panic_note(p);
-            eval::Outcome::Panicked {
-                note: format!("panic: {note}"),
-            }
-            .to_json()
-        }
+        Err(p) => panicked(format!("panic: {}", panic_note(p))),
     }
 }
 
-/// The same never-panic net for transaction entries — the panic shape carries `valid`
-/// (santa-transaction.actuals), not eval's `value`.
-fn caught_actual_tx<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
-    match std::panic::catch_unwind(f) {
-        Ok(j) => j,
-        Err(p) => {
-            let note = panic_note(p);
-            transaction::TxOutcome::Panicked {
-                note: format!("panic: {note}"),
-            }
-            .to_json()
-        }
+/// The eval-shaped `panicked` actual (also the wire and NiPoPoW tiers').
+fn eval_panicked(note: String) -> J {
+    eval::Outcome::Panicked { note }.to_json()
+}
+
+/// The transaction-shaped `panicked` actual: it carries `valid` where eval's carries `value`.
+fn tx_panicked(note: String) -> J {
+    transaction::TxOutcome::Panicked { note }.to_json()
+}
+
+/// The tier a vector file's `schema` names.
+enum Tier<'v> {
+    /// `santa-eval/v6-fullctx`: its context carries the 9 headers a script sees, which this
+    /// `Context` (exactly 10) cannot hold, so its entries are not-implemented.
+    FullContextEval,
+    /// `santa-nipopow/*`: the file's chain, which each entry asks interlinks or a proof over.
+    NiPoPoW(&'v [J]),
+    Wire,
+    Transaction,
+    Eval,
+}
+
+fn tier_of(vector: &J) -> Tier<'_> {
+    match vector["schema"].as_str().unwrap_or("") {
+        "santa-eval/v6-fullctx" => Tier::FullContextEval,
+        s if s.starts_with("santa-nipopow/") => Tier::NiPoPoW(
+            vector["chain"]
+                .as_array()
+                .expect("nipopow vector missing chain"),
+        ),
+        s if s.starts_with("santa-wire/") => Tier::Wire,
+        s if s.starts_with("santa-transaction/") => Tier::Transaction,
+        _ => Tier::Eval,
     }
 }
 
 /// Evaluate every entry of one vector file (blind), pairing each entry's `name`
 /// with its actual JSON and the vector's blessed `expected` JSON. Returns empty for
-/// a file carrying no `entries` (not an eval vector). A malformed vector aborts the
-/// run via `expect` — a loud error, never a silent skip (runner contract §3: every entry gets an outcome).
+/// a file carrying no `entries`. A malformed vector aborts the run via `expect`: a loud
+/// error, never a silent skip (runner contract §3: every entry gets an outcome).
 fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
     let text = std::fs::read_to_string(path).expect("read vector file");
     let vector: J = serde_json::from_str(&text).expect("parse vector JSON");
@@ -98,105 +113,92 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
         Some(e) => e,
         None => return Vec::new(),
     };
-    // Dispatch on the schema discriminator: wire entries round-trip `bytes_hex` (the blessed
-    // expected IS the entry's own bytes — round-trip to self); transaction entries validate
-    // the captured tx; eval entries evaluate `tree_bytes_hex` against the blessed `expected`.
-    let is_wire = vector["schema"]
-        .as_str()
-        .is_some_and(|s| s.starts_with("santa-wire/"));
-    let is_tx = vector["schema"]
-        .as_str()
-        .is_some_and(|s| s.starts_with("santa-transaction/"));
-    // Full-context eval (santa-eval/v6-fullctx) is not yet wired in the blitzen adapter:
-    // the entry carries a top-level `context` object rather than the per-field inputs that
-    // the existing eval dispatch (v1–v5) expects. Return not-implemented so these entries
-    // grade as COVERAGE (roadmap ledger) rather than producing false divergences.
-    let is_v6_fullctx = vector["schema"]
-        .as_str()
-        .is_some_and(|s| s == "santa-eval/v6-fullctx");
-    // NiPoPoW (santa-nipopow/v1): the chain is the file's, each entry asks for its interlinks or a proof over it.
-    let nipopow_chain: Option<&Vec<J>> = vector["schema"]
-        .as_str()
-        .filter(|s| s.starts_with("santa-nipopow/"))
-        .map(|_| {
-            vector["chain"]
-                .as_array()
-                .expect("nipopow vector missing chain")
-        });
+    let tier = tier_of(&vector);
     entries
         .iter()
         .map(|entry| {
             let name = entry["name"].as_str().unwrap_or("<unnamed>").to_string();
-            if is_v6_fullctx {
-                let actual = eval::Outcome::NotImplemented.to_json();
-                let expected = entry["expected"].clone();
-                (name, actual, expected)
-            } else if let Some(chain) = nipopow_chain {
-                let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    match entry["kind"].as_str().unwrap_or("") {
-                        "nipopow_interlinks" => nipopow::run_interlinks(chain),
-                        "nipopow_prove" => {
-                            let m = entry["payload"]["m"].as_u64().expect("missing m") as u32;
-                            let k = entry["payload"]["k"].as_u64().expect("missing k") as u32;
-                            nipopow::run_prove(chain, m, k, entry["payload"]["headerId"].as_str())
-                        }
-                        _ => serde_json::json!({"error": "not-implemented"}),
-                    }
-                }));
-                (name, actual, entry["expected"].clone())
-            } else if is_wire {
-                let kind = entry["kind"].as_str().expect("wire entry missing kind");
-                let bytes_hex = entry["bytes_hex"]
-                    .as_str()
-                    .expect("wire entry missing bytes_hex");
-                let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    wire::run_entry(kind, bytes_hex).to_json()
-                }));
-                let expected = serde_json::json!({"bytes_hex": bytes_hex, "error": J::Null});
-                (name, actual, expected)
-            } else if is_tx {
-                let actual = caught_actual_tx(std::panic::AssertUnwindSafe(|| {
-                    transaction::run_entry(entry).to_json()
-                }));
-                // The blessed expected in the actuals vocabulary: {valid, cost, error:null}.
-                // `reason` is diagnostic-only (never graded) — dropped so self-compare
-                // doesn't coal on differing reject strings.
-                let expected = serde_json::json!({
-                    "valid": entry["expected"]["valid"],
-                    "cost": entry["expected"]["cost"],
-                    "error": J::Null,
-                });
-                (name, actual, expected)
-            } else {
-                let tree_hex = entry["tree_bytes_hex"]
-                    .as_str()
-                    .expect("entry missing tree_bytes_hex");
-                let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
-                let input = entry.get("input").filter(|v| !v.is_null());
-                let inputs = entry.get("inputs").and_then(|v| v.as_array());
-                // santa-eval/v4: SELF box carries non-mandatory registers (R4-R9).
-                let self_registers = entry.get("selfRegisters").and_then(|v| v.as_object());
-                // santa-eval/v5: SELF box carries a top-level ContextExtension {key -> SValue}.
-                let extension = entry.get("extension").and_then(|v| v.as_object());
-                let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
-                let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
-                let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
-                    eval::run_entry(
-                        &tree_bytes,
-                        input,
-                        inputs,
-                        self_registers,
-                        extension,
-                        tree_v,
-                        act_v,
-                    )
-                    .to_json()
-                }));
-                let expected = entry["expected"].clone();
-                (name, actual, expected)
-            }
+            let (actual, expected) = match tier {
+                Tier::FullContextEval => (
+                    eval::Outcome::NotImplemented.to_json(),
+                    entry["expected"].clone(),
+                ),
+                Tier::NiPoPoW(chain) => (
+                    caught(|| nipopow_entry(entry, chain), eval_panicked),
+                    entry["expected"].clone(),
+                ),
+                Tier::Wire => wire_entry(entry),
+                Tier::Transaction => transaction_entry(entry),
+                Tier::Eval => (eval_entry(entry), entry["expected"].clone()),
+            };
+            (name, actual, expected)
         })
         .collect()
+}
+
+fn nipopow_entry(entry: &J, chain: &[J]) -> J {
+    match entry["kind"].as_str().unwrap_or("") {
+        "nipopow_interlinks" => nipopow::run_interlinks(chain),
+        "nipopow_prove" => {
+            let m = entry["payload"]["m"].as_u64().expect("missing m") as u32;
+            let k = entry["payload"]["k"].as_u64().expect("missing k") as u32;
+            nipopow::run_prove(chain, m, k, entry["payload"]["headerId"].as_str())
+        }
+        _ => serde_json::json!({"error": "not-implemented"}),
+    }
+}
+
+/// A wire entry's actual, and its expected: its own bytes back (a round-trip to itself).
+fn wire_entry(entry: &J) -> (J, J) {
+    let kind = entry["kind"].as_str().expect("wire entry missing kind");
+    let bytes_hex = entry["bytes_hex"]
+        .as_str()
+        .expect("wire entry missing bytes_hex");
+    let actual = caught(|| wire::run_entry(kind, bytes_hex).to_json(), eval_panicked);
+    (
+        actual,
+        serde_json::json!({"bytes_hex": bytes_hex, "error": J::Null}),
+    )
+}
+
+/// A transaction entry's actual, and its expected in the actuals vocabulary. `reason` is
+/// diagnostic only, never graded, so it is left out of the expected.
+fn transaction_entry(entry: &J) -> (J, J) {
+    let actual = caught(|| transaction::run_entry(entry).to_json(), tx_panicked);
+    let expected = serde_json::json!({
+        "valid": entry["expected"]["valid"],
+        "cost": entry["expected"]["cost"],
+        "error": J::Null,
+    });
+    (actual, expected)
+}
+
+fn eval_entry(entry: &J) -> J {
+    let tree_hex = entry["tree_bytes_hex"]
+        .as_str()
+        .expect("entry missing tree_bytes_hex");
+    let tree_bytes = hex_to_bytes(tree_hex).expect("bad tree_bytes_hex");
+    let input = entry.get("input").filter(|v| !v.is_null());
+    let inputs = entry.get("inputs").and_then(|v| v.as_array());
+    let self_registers = entry.get("selfRegisters").and_then(|v| v.as_object()); // v4
+    let extension = entry.get("extension").and_then(|v| v.as_object()); // v5
+    let tree_v = entry["version"]["ergoTree"].as_u64().unwrap_or(0) as u8;
+    let act_v = entry["version"]["activated"].as_u64().unwrap_or(0) as u8;
+    caught(
+        || {
+            eval::run_entry(
+                &tree_bytes,
+                input,
+                inputs,
+                self_registers,
+                extension,
+                tree_v,
+                act_v,
+            )
+            .to_json()
+        },
+        eval_panicked,
+    )
 }
 
 /// Self-compare mode: evaluate the corpus and tally nice/coal vs the blessed `expected`.
@@ -308,13 +310,13 @@ pub(crate) fn hex_to_bytes(s: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{caught_actual, caught_actual_tx, hex_to_bytes};
+    use super::{caught, eval_panicked, hex_to_bytes, tx_panicked};
     use crate::eval::Outcome;
     use serde_json::{json, Value as J};
 
     #[test]
-    fn caught_actual_turns_a_panic_into_panicked() {
-        let j = caught_actual(std::panic::AssertUnwindSafe(|| -> J { panic!("kaboom") }));
+    fn caught_turns_a_panic_into_panicked() {
+        let j = caught(|| -> J { panic!("kaboom") }, eval_panicked);
         assert_eq!(j["error"], "panicked");
         assert_eq!(j["value"], J::Null);
         assert_eq!(j["cost"], J::Null);
@@ -322,12 +324,10 @@ mod tests {
     }
 
     #[test]
-    fn caught_actual_tx_turns_a_panic_into_a_tx_shaped_panicked() {
-        // The tx net's panic shape carries `valid` (santa-transaction.actuals), not
-        // eval's `value` — a value-shaped panic would fail the tx actuals schema.
-        let j = caught_actual_tx(std::panic::AssertUnwindSafe(|| -> J {
-            panic!("tx kaboom")
-        }));
+    fn caught_with_the_tx_shape_carries_valid() {
+        // The tx panic shape carries `valid` (santa-transaction.actuals), not eval's
+        // `value`: a value-shaped panic would fail the tx actuals schema.
+        let j = caught(|| -> J { panic!("tx kaboom") }, tx_panicked);
         assert_eq!(j["error"], "panicked");
         assert_eq!(j["valid"], J::Null);
         assert_eq!(j["cost"], J::Null);
@@ -335,8 +335,8 @@ mod tests {
     }
 
     #[test]
-    fn caught_actual_passes_through_a_normal_outcome() {
-        let j = caught_actual(std::panic::AssertUnwindSafe(|| Outcome::Errored.to_json()));
+    fn caught_passes_through_a_normal_outcome() {
+        let j = caught(|| Outcome::Errored.to_json(), eval_panicked);
         assert_eq!(j["error"], "errored");
     }
 
