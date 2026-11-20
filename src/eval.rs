@@ -40,10 +40,8 @@ pub enum Outcome {
         cost: Option<u64>,
     },
     Errored,
-    /// Contract outcome (§3) for an op/method/type the runner doesn't implement.
-    /// Not yet emitted — sigma-rust eval reports unimplemented ops as generic
-    /// errors not yet distinguished from a genuine `errored`. TODO: map them.
-    #[allow(dead_code)]
+    /// An entry the runner cannot evaluate faithfully on this sigma-rust: emitted for the
+    /// full-context form, whose context (the 9 headers a script sees) `Context` cannot hold.
     NotImplemented,
     /// A failure that isn't a clean eval `errored`: an otherwise-uncaught panic caught by main's
     /// net, OR a SANTA-bridge failure (input decode / result encode) that `run_entry` records
@@ -699,8 +697,6 @@ mod tests {
     /// one failed as a wrong VALUE at the right cost, which no break would have surfaced.
     #[test]
     fn canonical_context_binds_no_per_input_extension() {
-        use ergotree_ir::chain::context::ContextExtensionProvider;
-
         let tree = ErgoTree::new(
             ergotree_ir::ergo_tree::ErgoTreeHeader::v1(false),
             &ergotree_ir::mir::expr::Expr::Const(1i32.into()),
@@ -743,7 +739,7 @@ mod tests {
 
         // v5 — a full top-level extension, still nothing per-input.
         let mut ext = ContextExtension::empty();
-        ext.values.insert(0u8, var1.clone().into());
+        ext.values.insert(0u8, var1.clone());
         let ctx = build_context_v5(ext, 3, 2, &tree);
         assert!(
             ctx.extension.values.contains_key(&0u8),
@@ -757,7 +753,7 @@ mod tests {
         // v3 — the exception, and it must keep working: one spending input per entry
         // extension, with an EMPTY top-level extension.
         let mut inp = ContextExtension::empty();
-        inp.values.insert(1u8, var1.into());
+        inp.values.insert(1u8, var1);
         let ctx = build_context_v3(vec![inp], 3, 2, &tree);
         assert!(
             ctx.extension.values.is_empty(),

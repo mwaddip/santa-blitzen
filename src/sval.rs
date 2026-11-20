@@ -199,7 +199,7 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
 // (the shape of the sigma-rust session's forthcoming `CollValue`) without touching this bridge.
 fn encode_coll(coll: &CollKind<Value>) -> Result<J, BridgeError> {
     let arr: Result<Vec<J>, _> = coll.as_vec().iter().map(encode_value).collect();
-    Ok(json!({"kind": "Coll", "elem": encode_stype(&coll.elem_tpe()), "items": arr?}))
+    Ok(json!({"kind": "Coll", "elem": encode_stype(coll.elem_tpe()), "items": arr?}))
 }
 
 // ---------------------------------------------------------------------------

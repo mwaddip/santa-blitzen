@@ -177,7 +177,10 @@ fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, St
     t.insert(Parameter::DataInputCost, pget("dataInputCost")?);
     t.insert(Parameter::OutputCost, pget("outputCost")?);
     t.insert(Parameter::TokenAccessCost, pget("tokenAccessCost")?);
-    let params_block_version = p["blockVersion"].as_i64().map(|v| v as i32).unwrap_or(version as i32);
+    let params_block_version = p["blockVersion"]
+        .as_i64()
+        .map(|v| v as i32)
+        .unwrap_or(version as i32);
     t.insert(Parameter::BlockVersion, params_block_version);
 
     Ok(ErgoStateContext::new(pre_header, headers, parameters))

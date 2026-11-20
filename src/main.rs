@@ -117,7 +117,11 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
     let nipopow_chain: Option<&Vec<J>> = vector["schema"]
         .as_str()
         .filter(|s| s.starts_with("santa-nipopow/"))
-        .map(|_| vector["chain"].as_array().expect("nipopow vector missing chain"));
+        .map(|_| {
+            vector["chain"]
+                .as_array()
+                .expect("nipopow vector missing chain")
+        });
     entries
         .iter()
         .map(|entry| {
@@ -393,17 +397,25 @@ mod tests {
     #[test]
     fn nipopow_entries_answer_interlinks_and_a_proof() {
         use crate::run_vector_file;
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nipopow-chain-32.json");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/nipopow-chain-32.json");
         let results = run_vector_file(&path);
         assert_eq!(results.len(), 2);
         let (_, interlinks, _) = &results[0];
         assert_eq!(interlinks["error"], J::Null, "{interlinks}");
-        assert_eq!(interlinks["interlinks"].as_array().map(Vec::len), Some(32), "{interlinks}");
+        assert_eq!(
+            interlinks["interlinks"].as_array().map(Vec::len),
+            Some(32),
+            "{interlinks}"
+        );
         let (_, prove, _) = &results[1];
         assert_ne!(prove["error"], "not-implemented", "{prove}");
         if prove["error"].is_null() {
             let hex = prove["proofHex"].as_str().expect("proofHex");
-            assert!(!hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()), "{prove}");
+            assert!(
+                !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()),
+                "{prove}"
+            );
         }
     }
 
@@ -427,9 +439,10 @@ mod tests {
                 }
             ]
         }"#;
-        let path = std::path::Path::new("/tmp/blitzen-v6-fullctx-test.json");
-        std::fs::write(path, vector_json).expect("write test vector");
-        let results = run_vector_file(path);
+        let path =
+            std::env::temp_dir().join(format!("blitzen-v6-fullctx-{}.json", std::process::id()));
+        std::fs::write(&path, vector_json).expect("write test vector");
+        let results = run_vector_file(&path);
         assert_eq!(results.len(), 1, "expected one result");
         let (_name, actual, _expected) = &results[0];
         assert_eq!(

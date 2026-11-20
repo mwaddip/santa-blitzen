@@ -23,7 +23,9 @@ fn value_bytes(j: &J) -> Option<Result<Vec<u8>, BridgeError>> {
     Some(match j.get("bytes_hex").and_then(|h| h.as_str()) {
         Some(h) => crate::hex_to_bytes(h)
             .map_err(|_| BridgeError::Decode(format!("Value bytes_hex: bad hex {h:?}"))),
-        None => Err(BridgeError::Decode("Value binding without bytes_hex".into())),
+        None => Err(BridgeError::Decode(
+            "Value binding without bytes_hex".into(),
+        )),
     })
 }
 
@@ -39,9 +41,9 @@ fn read_whole<R: SigmaByteRead, T>(
     let out = r
         .with_tree_version(ErgoTreeVersion::from(activated), parse)
         .map_err(|e| BridgeError::Refused(format!("the reader refused the Value: {e}")))?;
-    let pos = r
-        .position()
-        .map_err(|e| BridgeError::Decode(format!("reader position: {e:?}")))? as usize;
+    let pos =
+        r.position()
+            .map_err(|e| BridgeError::Decode(format!("reader position: {e:?}")))? as usize;
     if pos != len {
         return Err(BridgeError::Refused(format!(
             "{} byte(s) left after the value",
@@ -61,9 +63,12 @@ pub fn extension_binding(j: &J, activated: u8) -> Result<Constant, BridgeError> 
         return sval::decode_constant(j);
     };
     let frame = [&[0x01u8, 0x01][..], &bytes?].concat();
-    let ext = read_whole(sigma_byte_reader::from_bytes(&frame[..]), frame.len(), activated, |r| {
-        ContextExtension::sigma_parse(r)
-    })?;
+    let ext = read_whole(
+        sigma_byte_reader::from_bytes(&frame[..]),
+        frame.len(),
+        activated,
+        ContextExtension::sigma_parse,
+    )?;
     ext.values
         .get(&1u8)
         .cloned()
@@ -111,9 +116,12 @@ pub fn register_map(
             ),
         }
     }
-    read_whole(sigma_byte_reader::from_bytes(&frame[..]), frame.len(), activated, |r| {
-        NonMandatoryRegisters::sigma_parse(r)
-    })
+    read_whole(
+        sigma_byte_reader::from_bytes(&frame[..]),
+        frame.len(),
+        activated,
+        NonMandatoryRegisters::sigma_parse,
+    )
 }
 
 #[cfg(test)]
@@ -134,7 +142,8 @@ mod tests {
     fn an_extension_value_equals_the_json_form_of_the_same_value() {
         let json = serde_json::json!({ "kind": "Long", "value": "7" });
         let from_json = extension_binding(&json, 3).unwrap();
-        let from_bytes = extension_binding(&value_json(&const_hex(&Constant::from(7i64))), 3).unwrap();
+        let from_bytes =
+            extension_binding(&value_json(&const_hex(&Constant::from(7i64))), 3).unwrap();
         assert_eq!(from_bytes, from_json);
     }
 
@@ -168,15 +177,27 @@ mod tests {
         .unwrap();
         assert_eq!(regs.len(), 3);
         assert_eq!(r4(&regs), Some(Constant::from(4i32)));
-        assert_eq!(regs.get_constant(NonMandatoryRegisterId::R5).unwrap(), Some(Constant::from(7i64)));
-        assert_eq!(regs.get_constant(NonMandatoryRegisterId::R6).unwrap(), Some(Constant::from(true)));
+        assert_eq!(
+            regs.get_constant(NonMandatoryRegisterId::R5).unwrap(),
+            Some(Constant::from(7i64))
+        );
+        assert_eq!(
+            regs.get_constant(NonMandatoryRegisterId::R6).unwrap(),
+            Some(Constant::from(true))
+        );
     }
 
     #[test]
     fn a_gap_in_the_registers_is_the_vectors_defect_not_a_refusal() {
         let json = serde_json::json!({ "kind": "Int", "value": 4 });
         let value = value_json(&const_hex(&Constant::from(7i64)));
-        let got = register_map(&[(NonMandatoryRegisterId::R4, &json), (NonMandatoryRegisterId::R6, &value)], 3);
+        let got = register_map(
+            &[
+                (NonMandatoryRegisterId::R4, &json),
+                (NonMandatoryRegisterId::R6, &value),
+            ],
+            3,
+        );
         assert!(matches!(got, Err(BridgeError::Decode(_))), "got {got:?}");
     }
 
@@ -201,14 +222,19 @@ mod tests {
         // The bytes ARE an Option[Int] constant — a plain constant read at v3 takes them — so the
         // refusals below are rule 1019's, not a parse error's.
         let c = sigma_byte_reader::from_bytes(&[0x28u8, 0x01, 0x02][..])
-            .with_tree_version(ErgoTreeVersion::V3, |r| Constant::sigma_parse(r))
+            .with_tree_version(ErgoTreeVersion::V3, Constant::sigma_parse)
             .expect("an Option[Int] constant");
         assert_eq!(
             c.tpe,
-            ergotree_ir::types::stype::SType::SOption(Box::new(ergotree_ir::types::stype::SType::SInt).into())
+            ergotree_ir::types::stype::SType::SOption(
+                Box::new(ergotree_ir::types::stype::SType::SInt).into()
+            )
         );
         let some_int = value_json("280102");
-        assert!(matches!(extension_binding(&some_int, 3), Err(BridgeError::Refused(_))));
+        assert!(matches!(
+            extension_binding(&some_int, 3),
+            Err(BridgeError::Refused(_))
+        ));
         assert!(matches!(
             register_map(&[(NonMandatoryRegisterId::R4, &some_int)], 3),
             Err(BridgeError::Refused(_))
@@ -226,6 +252,9 @@ mod tests {
         // STuple constant would write its type byte instead.
         let bytes = regs.sigma_serialize_bytes().unwrap();
         assert_eq!(hex(&bytes), "01860204020404");
-        assert!(matches!(extension_binding(&tuple_expr, 3), Err(BridgeError::Refused(_))));
+        assert!(matches!(
+            extension_binding(&tuple_expr, 3),
+            Err(BridgeError::Refused(_))
+        ));
     }
 }
