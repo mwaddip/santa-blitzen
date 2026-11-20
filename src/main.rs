@@ -76,7 +76,8 @@ fn tx_panicked(note: String) -> J {
     transaction::TxOutcome::Panicked { note }.to_json()
 }
 
-/// The tier a vector file's `schema` names.
+/// The tier a vector file's `schema` names: only the schemas this runner was written for, by exact name and
+/// version.
 enum Tier<'v> {
     /// `santa-eval/v6-fullctx`: its context carries the 9 headers a script sees, which this
     /// `Context` (exactly 10) cannot hold, so its entries are not-implemented.
@@ -86,19 +87,25 @@ enum Tier<'v> {
     Wire,
     Transaction,
     Eval,
+    /// Any other schema (a newer version of one above, or a tier this runner does not mount): every entry is
+    /// not-implemented, never read as a known schema (runner-integration §3).
+    Unknown,
 }
 
 fn tier_of(vector: &J) -> Tier<'_> {
     match vector["schema"].as_str().unwrap_or("") {
+        "santa-eval/v1" | "santa-eval/v2" | "santa-eval/v3" | "santa-eval/v4" | "santa-eval/v5" => {
+            Tier::Eval
+        }
         "santa-eval/v6-fullctx" => Tier::FullContextEval,
-        s if s.starts_with("santa-nipopow/") => Tier::NiPoPoW(
+        "santa-nipopow/v1" => Tier::NiPoPoW(
             vector["chain"]
                 .as_array()
                 .expect("nipopow vector missing chain"),
         ),
-        s if s.starts_with("santa-wire/") => Tier::Wire,
-        s if s.starts_with("santa-transaction/") => Tier::Transaction,
-        _ => Tier::Eval,
+        "santa-wire/v1" => Tier::Wire,
+        "santa-transaction/v1" => Tier::Transaction,
+        _ => Tier::Unknown,
     }
 }
 
@@ -119,7 +126,7 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
         .map(|entry| {
             let name = entry["name"].as_str().unwrap_or("<unnamed>").to_string();
             let (actual, expected) = match tier {
-                Tier::FullContextEval => (
+                Tier::FullContextEval | Tier::Unknown => (
                     eval::Outcome::NotImplemented.to_json(),
                     entry["expected"].clone(),
                 ),
@@ -387,6 +394,33 @@ mod tests {
                 actual.get("note").is_none(),
                 "errored must not carry a note; got: {}",
                 actual
+            );
+        }
+    }
+
+    /// A schema the runner was not written for (a newer version of one it knows, or a tier it does not mount) is
+    /// answered `not-implemented` for every entry: read as a known schema, a new envelope would show as false
+    /// divergences (runner-integration §3).
+    #[test]
+    fn an_unknown_schema_is_not_implemented() {
+        use crate::run_vector_file;
+        // a tree_bytes_hex and kind/bytes_hex a known arm would happily read
+        for schema in ["santa-eval/v99", "santa-wire/v2", "santa-block/v1"] {
+            let vector = json!({"schema": schema, "entries": [{
+                "name": "e#0", "tree_bytes_hex": "000402", "kind": "Constant", "bytes_hex": "0101",
+                "version": {"ergoTree": 0, "activated": 2}, "expected": {"error": null}
+            }]});
+            let path = std::env::temp_dir().join(format!(
+                "blitzen-unknown-schema-{}.json",
+                std::process::id()
+            ));
+            std::fs::write(&path, vector.to_string()).expect("write test vector");
+            let results = run_vector_file(&path);
+            assert_eq!(results.len(), 1, "{schema}");
+            assert_eq!(
+                results[0].1["error"], "not-implemented",
+                "{schema}: {}",
+                results[0].1
             );
         }
     }
