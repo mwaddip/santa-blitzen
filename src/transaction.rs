@@ -13,12 +13,8 @@
 //! failure (sigma-rust can't even read bytes the JVM accepted) is `errored` — no
 //! verdict was reached; that too is a real divergence on an accept vector.
 //!
-//! Cost is impl-conditional like eval's: with `jit-cost` (the eni branch) `validate`
-//! returns the accumulated block-cost total (tx init + per-input reduction + crypto
-//! verification — `Result<u64, _>`); upstream develop's returns `Result<(), _>` — no
-//! tx-cost model ⇒ `cost: null` (value-only grading; runner.json declares `cost`
-//! per branch). The no-feature arm matches `Ok(_)` so this one file compiles against
-//! either signature.
+//! This sigma-rust has no transaction cost model (`validate` returns `Result<(), _>`), so an
+//! accepted transaction's cost is `null`.
 
 use ergo_chain_types::{BlockId, Digest32, EcPoint, Header, PreHeader, Votes};
 use ergo_lib::chain::ergo_state_context::{ErgoStateContext, Headers};
@@ -31,16 +27,11 @@ use sigma_ser::ScorexSerializable; // Header/EcPoint scorex_parse_bytes
 
 use crate::hex_to_bytes;
 
-/// One transaction entry's outcome — the tx analog of [`crate::eval::Outcome`]:
-/// value+cost become verdict (`valid`) + cost.
+/// One transaction entry's outcome — the tx analog of [`crate::eval::Outcome`].
 pub enum TxOutcome {
-    /// Validation reached a verdict. `cost` is `Some` only on accept under `jit-cost`
-    /// (eni); `reason` is `Some` only on reject (the impl's error string, diagnostic).
-    Verdict {
-        valid: bool,
-        cost: Option<u64>,
-        reason: Option<String>,
-    },
+    /// Validation reached a verdict; `reason` is `Some` only on reject (the impl's error
+    /// string, diagnostic).
+    Verdict { valid: bool, reason: Option<String> },
     /// No verdict: the runner couldn't decode the entry or assemble the tx context.
     Errored { reason: String },
     /// A would-be panic, caught by main's never-panic net (contract §3).
@@ -50,14 +41,10 @@ pub enum TxOutcome {
 impl TxOutcome {
     pub fn to_json(&self) -> serde_json::Value {
         match self {
-            TxOutcome::Verdict {
-                valid,
-                cost,
-                reason,
-            } => {
+            TxOutcome::Verdict { valid, reason } => {
                 let mut j = serde_json::json!({
                     "valid": valid,
-                    "cost": cost,
+                    "cost": null,
                     "error": serde_json::Value::Null,
                 });
                 if let Some(r) = reason {
@@ -241,22 +228,12 @@ pub fn run_entry(entry: &serde_json::Value) -> TxOutcome {
     };
 
     match tx_context.validate(&state_context) {
-        Ok(_total) => {
-            // eni's validate returns the accumulated block-cost total; upstream
-            // develop's returns () — `Ok(_total)` binds either, the feature picks.
-            #[cfg(feature = "jit-cost")]
-            let cost = Some(_total);
-            #[cfg(not(feature = "jit-cost"))]
-            let cost = None;
-            TxOutcome::Verdict {
-                valid: true,
-                cost,
-                reason: None,
-            }
-        }
+        Ok(()) => TxOutcome::Verdict {
+            valid: true,
+            reason: None,
+        },
         Err(e) => TxOutcome::Verdict {
             valid: false,
-            cost: None,
             reason: Some(e.to_string()),
         },
     }
