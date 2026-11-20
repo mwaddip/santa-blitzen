@@ -131,6 +131,7 @@ version = "0.1.0"
 dependencies = [
  "ergo-chain-types",
  "ergo-lib",
+ "ergo-nipopow",
  "ergotree-interpreter",
  "ergotree-ir",
  "proptest",
@@ -236,10 +237,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "core2"
-version = "0.4.0"
+name = "core3"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
+checksum = "7cbcb5224cf18d0beaecf52c52a58b248213de007fa72bc212d916224e26ceb8"
 dependencies = [
  "memchr",
 ]
@@ -430,12 +431,12 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "ergo-chain-types"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base16",
  "base64",
  "bounded-integer",
- "core2",
+ "core3",
  "derive_more",
  "elliptic-curve",
  "k256",
@@ -454,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "ergo-lib"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "base16",
  "bounded-vec",
@@ -483,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "ergo-merkle-tree"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base16",
  "blake2",
@@ -499,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "ergo-nipopow"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base16",
  "bounded-integer",
@@ -533,13 +534,13 @@ dependencies = [
 
 [[package]]
 name = "ergotree-interpreter"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "base16",
  "blake2",
  "bounded-vec",
  "bytes",
- "core2",
+ "core3",
  "derive_more",
  "elliptic-curve",
  "ergo-chain-types",
@@ -568,13 +569,13 @@ dependencies = [
 
 [[package]]
 name = "ergotree-ir"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "base16",
  "bnum",
  "bounded-vec",
  "bs58",
- "core2",
+ "core3",
  "derive_more",
  "elliptic-curve",
  "ergo-chain-types",
@@ -697,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "gf2_192"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "derive_more",
  "proptest",
@@ -1441,24 +1442,24 @@ dependencies = [
 
 [[package]]
 name = "sigma-ser"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "bitvec",
  "bounded-vec",
- "core2",
+ "core3",
  "thiserror",
 ]
 
 [[package]]
 name = "sigma-test-util"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "sigma-util"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "blake2",
  "sha2 0.10.9",

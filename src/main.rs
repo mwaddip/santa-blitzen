@@ -17,6 +17,7 @@
 
 mod binding;
 mod eval;
+mod nipopow;
 mod sval;
 mod transaction;
 mod wire;
@@ -112,6 +113,11 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
     let is_v6_fullctx = vector["schema"]
         .as_str()
         .is_some_and(|s| s == "santa-eval/v6-fullctx");
+    // NiPoPoW (santa-nipopow/v1): the chain is the file's, each entry asks for its interlinks or a proof over it.
+    let nipopow_chain: Option<&Vec<J>> = vector["schema"]
+        .as_str()
+        .filter(|s| s.starts_with("santa-nipopow/"))
+        .map(|_| vector["chain"].as_array().expect("nipopow vector missing chain"));
     entries
         .iter()
         .map(|entry| {
@@ -120,6 +126,19 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
                 let actual = eval::Outcome::NotImplemented.to_json();
                 let expected = entry["expected"].clone();
                 (name, actual, expected)
+            } else if let Some(chain) = nipopow_chain {
+                let actual = caught_actual(std::panic::AssertUnwindSafe(|| {
+                    match entry["kind"].as_str().unwrap_or("") {
+                        "nipopow_interlinks" => nipopow::run_interlinks(chain),
+                        "nipopow_prove" => {
+                            let m = entry["payload"]["m"].as_u64().expect("missing m") as u32;
+                            let k = entry["payload"]["k"].as_u64().expect("missing k") as u32;
+                            nipopow::run_prove(chain, m, k, entry["payload"]["headerId"].as_str())
+                        }
+                        _ => serde_json::json!({"error": "not-implemented"}),
+                    }
+                }));
+                (name, actual, entry["expected"].clone())
             } else if is_wire {
                 let kind = entry["kind"].as_str().expect("wire entry missing kind");
                 let bytes_hex = entry["bytes_hex"]
@@ -364,6 +383,27 @@ mod tests {
                 "errored must not carry a note; got: {}",
                 actual
             );
+        }
+    }
+
+    /// santa-nipopow/v1 (`tests/fixtures/nipopow-chain-32.json`: SANTA's 32-header JVM chain, its interlinks entry and
+    /// one prove entry). This pins the arm's ENVELOPE, not develop's verdicts (the vectors do that): the interlinks
+    /// entry answers one interlink vector per chain header, the prove entry a hex `proofHex` (or an honest
+    /// errored / panicked), and neither is not-implemented.
+    #[test]
+    fn nipopow_entries_answer_interlinks_and_a_proof() {
+        use crate::run_vector_file;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nipopow-chain-32.json");
+        let results = run_vector_file(&path);
+        assert_eq!(results.len(), 2);
+        let (_, interlinks, _) = &results[0];
+        assert_eq!(interlinks["error"], J::Null, "{interlinks}");
+        assert_eq!(interlinks["interlinks"].as_array().map(Vec::len), Some(32), "{interlinks}");
+        let (_, prove, _) = &results[1];
+        assert_ne!(prove["error"], "not-implemented", "{prove}");
+        if prove["error"].is_null() {
+            let hex = prove["proofHex"].as_str().expect("proofHex");
+            assert!(!hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()), "{prove}");
         }
     }
 

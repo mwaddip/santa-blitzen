@@ -1,7 +1,7 @@
 # Blitzen
 
 The **sigma-rust** runner for the [SANTA](../santa) Ergo consensus conformance
-suite, covering the **eval**, **wire**, and **transaction** tiers. Blitzen runs
+suite, covering the **eval**, **wire**, **transaction** and **nipopow** tiers. Blitzen runs
 SANTA's committed vectors through sigma-rust and reports per-entry actuals —
 eval `{ value, cost, error }`, wire `{ bytes_hex, error }`, transaction
 `{ valid, cost, error }` — the runner half of the `run(vector) → actuals`
@@ -68,7 +68,7 @@ Blitzen is **version-agnostic** — it evaluates each entry under that entry's
 declared `(activated, ergoTree)` versions, so it runs the v6 corpus too once that
 lands.
 
-## Design (5 modules)
+## Design (6 modules)
 
 - **`sval.rs`** — the SValue ⇄ canonical-JSON bridge (contract §4): `Long`/`BigInt`
   as decimal strings, lower-case hex, `SigmaProp` as the **bare** serialized
@@ -80,7 +80,13 @@ lands.
   see the lenient-parse entry note above) + eval via `try_eval_out`, capturing
   the raw JIT cost from `ctx.jit_cost_value()`.
 - **`wire.rs`** — wire-tier round-trips: parse a kind's canonical bytes with the
-  sigma serializer and reserialize for byte-identity comparison.
+  sigma serializer and reserialize for byte-identity comparison. The `ErgoTree` kind
+  goes through the lenient parse (its vectors carry non-`SigmaProp` roots, which the
+  strict parse keeps as bytes instead of reading), so it re-encodes from structure.
+- **`nipopow.rs`** — the NiPoPoW tier: rebuild the vector's chain as `PoPowHeader`s
+  (interlinks and their proofs via `NipopowAlgos`), then answer an entry's interlinks
+  or `NipopowAlgos::prove` over it. `proofHex` ends with the proof's `continuous`
+  byte (0), which the node's wire encoding adds and sigma-rust's proof bytes omit.
 - **`transaction.rs`** — transaction-tier validation: decode a captured tx + its
   input boxes from node-API JSON, build the minimal state context the JVM blesser
   pinned (synthetic pre-header at the entry's height, blockVersion = activated+1,
