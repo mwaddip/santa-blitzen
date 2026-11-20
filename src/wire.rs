@@ -6,6 +6,7 @@
 
 use ergo_lib::chain::transaction::Transaction;
 use ergotree_ir::chain::ergo_box::ErgoBox;
+use ergotree_ir::ergo_tree::ErgoTree;
 use ergotree_ir::mir::constant::Constant;
 use ergotree_ir::serialization::sigma_byte_reader;
 use ergotree_ir::serialization::SigmaSerializable;
@@ -51,6 +52,23 @@ fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
     }
 }
 
+/// ErgoTree round-trip through `sigma_parse_bytes_lenient`, the arbitrary-root parse (the JVM's `checkType = false`
+/// reader). The wire vectors carry trees whose root is not a SigmaProp (an Int, a type-variable witness), which the
+/// strict `sigma_parse_bytes` keeps as unparsed bytes (an echo of the input) instead of reading; the lenient parse
+/// reads them to structure, so reserializing re-encodes them: the structural round-trip the ErgoTree kind asks for
+/// (runner-contract-wire §5).
+fn roundtrip_ergotree(bytes: &[u8]) -> WireOutcome {
+    match ErgoTree::sigma_parse_bytes_lenient(bytes) {
+        Ok(tree) => match tree.sigma_serialize_bytes() {
+            Ok(out) => WireOutcome::RoundTrip {
+                bytes_hex: bytes_to_hex(&out),
+            },
+            Err(_) => WireOutcome::Errored,
+        },
+        Err(_) => WireOutcome::Errored,
+    }
+}
+
 /// Round-trip one wire entry. `kind` selects the serializer. Header isn't wired here — it parses
 /// via ScorexSerializable, not SigmaSerializable → not-implemented.
 pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
@@ -68,6 +86,7 @@ pub fn run_entry(kind: &str, bytes_hex: &str) -> WireOutcome {
         "SigmaBoolean" => roundtrip::<SigmaBoolean>(&bytes),
         "Transaction" => roundtrip::<Transaction>(&bytes),
         "BlockTransactions" => roundtrip_block_transactions(&bytes),
+        "ErgoTree" => roundtrip_ergotree(&bytes),
         _ => WireOutcome::NotImplemented,
     }
 }
@@ -202,6 +221,23 @@ mod tests {
         let j = run_entry("Transaction", hex).to_json();
         assert_eq!(j["error"], J::Null);
         assert_eq!(j["bytes_hex"], hex);
+    }
+
+    /// An ErgoTree whose root is not a SigmaProp (an Int constant) round-trips through the lenient parse: the
+    /// arbitrary-root parse the JVM's `checkType = false` reader is, which the wire ErgoTree kind needs (the strict
+    /// parse refuses or keeps such a tree as bytes). Header v0, no size: `00`, then the root `04 02` (Int 1).
+    #[test]
+    fn ergotree_with_a_non_sigmaprop_root_round_trips() {
+        let j = run_entry("ErgoTree", "000402").to_json();
+        assert_eq!(j["error"], J::Null);
+        assert_eq!(j["bytes_hex"], "000402");
+    }
+
+    #[test]
+    fn ergotree_that_does_not_parse_is_errored() {
+        // header v0, then an opcode with no node behind it
+        let j = run_entry("ErgoTree", "00ff").to_json();
+        assert_eq!(j["error"], "errored");
     }
 
     #[test]
