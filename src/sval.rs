@@ -10,7 +10,7 @@
 //! GroupElement/SigmaProp/Box/Header/AvlTree are **lower-case** hex; cost is handled by the
 //! caller (it is not an SValue). Kinds with no canonical encoding (Unit,
 //! Context, PreHeader, Global, Lambda, String) surface as [`BridgeError::Encode`], which the
-//! runner records faithfully as a `panicked` note (contract §3) — a SANTA-side gap to wire,
+//! runner records faithfully as a `panicked` note (runner contract §3) — a SANTA-side gap to wire,
 //! never an "excuse" outcome.
 
 use ergotree_ir::mir::constant::{Constant, Literal};
@@ -21,7 +21,7 @@ use serde_json::{json, Value as J};
 
 /// A bridge failure. The payload strings are diagnostic context, read only via
 /// `Debug` (e.g. a test `.expect`); they are intentionally NOT surfaced in the
-/// contract actuals (§7 defers the error-reason taxonomy), so the dead-code lint
+/// contract actuals (runner contract §7 defers the error-reason taxonomy), so the dead-code lint
 /// reads the fields as unused in a non-test build.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -32,7 +32,7 @@ pub enum BridgeError {
     /// Malformed SANTA JSON on the decode side.
     Decode(String),
     /// The underlying library REFUSED structurally-valid input bytes — its own
-    /// parse/`try_from` verdict on oracle-blessed material (e.g. a Box value outside
+    /// parse/`try_from` verdict on material the reference accepted (e.g. a Box value outside
     /// the impl's bounds). The library speaking, not the bridge: runners surface this
     /// as `errored` (a real divergence on an accept vector), never `panicked`.
     Refused(String),
@@ -158,7 +158,7 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
             json!({"kind": "GroupElement", "bytes_hex": ser_bytes(&**ge, "GroupElement")?})
         }
         Value::SigmaProp(sp) => {
-            // Canonical encoding (contract §4) is the bare serialized `SigmaBoolean`,
+            // Canonical encoding (runner contract §4) is the bare serialized `SigmaBoolean`,
             // NOT `prop_bytes()` — which wraps it in an ErgoTree (spurious `0008` header).
             json!({"kind": "SigmaProp", "raw_hex": ser_bytes(sp.value(), "SigmaProp")?})
         }
@@ -192,7 +192,7 @@ pub fn encode_value(v: &Value) -> Result<J, BridgeError> {
 }
 
 // A runtime collection, whatever class it is held as: its item type and its items, the same JSON
-// for every form. The canonical encoding (contract §4) is representation-BLIND by design — a
+// for every form. The canonical encoding (runner contract §4) is representation-BLIND by design — a
 // specialised and a generic collection of the same items must encode identically, or the runner
 // would leak sigma-rust's internal representation into the actuals and false-red the corpus.
 // Written against the accessors rather than the variants so the representation can grow a case
@@ -254,7 +254,7 @@ pub fn decode_constant(j: &J) -> Result<Constant, BridgeError> {
         }
         "UnsignedBigInt" => {
             use core::str::FromStr;
-            // Decimal string (contract §4), like Long/BigInt. Parse straight to
+            // Decimal string (runner contract §4), like Long/BigInt. Parse straight to
             // UnsignedBigInt — NOT via BigInt256, which would reject values in
             // the 2^255..2^256 range that are valid unsigned.
             let n = ergotree_ir::unsignedbigint256::UnsignedBigInt::from_str(&str_val(

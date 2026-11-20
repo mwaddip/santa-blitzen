@@ -1,121 +1,69 @@
 # Blitzen
 
-The **sigma-rust** runner for the [SANTA](../santa) Ergo consensus conformance
-suite, covering the **eval**, **wire**, **transaction** and **nipopow** tiers. Blitzen runs
-SANTA's committed vectors through sigma-rust and reports per-entry actuals —
-eval `{ value, cost, error }`, wire `{ bytes_hex, error }`, transaction
-`{ valid, cost, error }` — the runner half of the `run(vector) → actuals`
-contract (SANTA `docs/contract/runner-contract.md`).
-The JVM reference (sigma-state / ergo-core) is canonical; where sigma-rust
-diverges from the blessed `expected`, that divergence is a **finding surfaced**,
-not a bug hidden.
+sigma-rust's runner for [SANTA](https://github.com/mwaddip/santa), the Ergo consensus conformance
+suite. SANTA holds test vectors whose expected answers were recorded ("blessed") from the
+reference implementation (sigma-state and the JVM node); Blitzen runs them through sigma-rust and
+writes down what sigma-rust answers, and SANTA compares the two. Where sigma-rust answers
+differently, that is a divergence to look at, not something this runner smooths over.
 
-Reindeer naming: Rudolph = the JVM reference, Dasher = ergots, **Blitzen = sigma-rust**.
+It covers four tiers:
 
-## Layout
+| tier | what an entry is | what Blitzen answers |
+|---|---|---|
+| eval | an ErgoTree, an input, the `(activated, ergoTree)` versions | `{value, cost, error}` |
+| wire | bytes of a `Constant`, `Box`, `Transaction`, `SigmaBoolean`, `ErgoTree` or block-transactions section | the bytes sigma-rust writes back |
+| transaction | a transaction, its input boxes, the headers, pre-header and parameters it is validated under | `{valid, cost, error}` |
+| nipopow | a header chain, and an interlinks or proof request over it | the interlinks, or the proof's bytes |
 
-Blitzen `path`-depends on the sigma-rust crates as a sibling checkout: from this repo,
-`../sigma-rust` is the sigma-rust **repo root** (the directory containing `ergotree-ir/`,
-`ergotree-interpreter/`, `ergo-chain-types/`). Cargo resolves `path` deps relative to the
-manifest, not the CWD, so the build runs from any working directory once that sibling is
-in place.
+The formats are SANTA's runner contract
+([`docs/contract/runner-contract.md`](https://github.com/mwaddip/santa/blob/main/docs/contract/runner-contract.md)
+and its `-wire`, `-transaction` and `-nipopow` companions). This sigma-rust has no JIT-cost
+model, so the runner declares `cost: false` and SANTA grades values and verdicts only.
 
-- **SANTA / CI** — SANTA owns the checkout: it clones `impl` (`<url>#<ref>`) into a
-  per-instance cache and passes `<impl-path>`; `santa-run` wires `../sigma-rust` to
-  `<impl-path>/sigma-rust`, then builds + emits (runner-integration contract §2-3).
-- **Local dev** — put a sigma-rust checkout at `../sigma-rust` (a sibling clone).
-
-`Cargo.lock` is committed and pins the yanked `core2 0.4.0` (sigma-rust's lock is
-gitignored upstream — see the `core2_yank_local_lock` note). The
-`ergotree-interpreter` **`arbitrary`** feature is enabled because it exposes the
-only public arbitrary-root eval entry (`test_util::try_eval_out`); Blitzen never
-uses its random generators — it builds a deterministic `Context` by hand.
-
-**Lenient parse entry** (`ErgoTree::sigma_parse_bytes_lenient` — eval.rs's parse
-entry): parses the **real header** — so size-bit semantics (consensus Rule 1012)
-are preserved — and accepts an arbitrary-typed (non-`SigmaProp`) root, mirroring
-the JVM blesser's `deserializeErgoTree(checkType=false)`. Provenance differs by
-branch (SANTA runner-contract §3 — build identity is declared):
-- **eni** carries the helper natively behind the `arbitrary` feature (`642041be` —
-  the same gated conformance surface as `try_eval_out`); no build patch.
-- **develop** (upstream has no helper yet) applies
-  a lenient-parse patch to the checkout at build time. It adds the helper and a
-  thread-local flag that only the helper sets; the one root-type check in the
-  tree-body parse reads it, and nothing else in the parse changes. So production
-  parsing behaves exactly as the checkout's own. The helper reads like the box and
-  transaction parser, not like `sigma_parse_bytes`: since upstream #1008 the latter
-  keeps an unsized tree it cannot parse as `Unparsed` (for loading JSON and
-  addresses), where sigma-state's `deserializeErgoTree` throws, so the helper does
-  its own reader parse and an unsized tree that does not parse is an error. The patch is
-  `patches/sigma-rust-lenient-parse-body.patch`, written against `sigma_parse_body`
-  (the wire-parse-conformance fold, upstream since #927). The
-  checkout is restored pristine after every run (EXIT trap; healed on entry after a
-  crash). The patch retires when the helper + Rule-1012 PR
-  (`fix/header-size-bit-rule1012`) merges to develop.
-
-## Build / run
+## Run it
 
 ```bash
-cargo build
-# self-compare: run every entry, compare vs the blessed `expected`, print nice/coal
-cargo run -- ../santa/vectors/eval/v5
-# emit: write actuals (no comparison) for the SANTA orchestrator, one file per vector
-cargo run -- emit ../santa/vectors/eval/v5 /tmp/blitzen-actuals
-cargo test            # unit tests (sval round-trips, wire, transaction, panic net)
+cargo test                                            # the runner's own tests
+cargo run --release -- <vector.json | dir>            # run entries, compare with `expected`, print nice/coal
+cargo run --release -- emit <vectors-dir> <out-dir>   # write one actuals file per vector (no comparison)
 ```
 
-Blitzen is **version-agnostic** — it evaluates each entry under that entry's
-declared `(activated, ergoTree)` versions, so it runs the v6 corpus too once that
-lands.
+`santa-run <impl-path> <vectors-dir> <out-dir>` is the entry SANTA calls: it builds the runner and
+runs `emit` (its last line through `$SANTA_BOUND`, SANTA's resource bound). `runner.json` declares
+what this runner covers (`version`, `tiers`, `cost`), read by SANTA from this checkout.
 
-## Design (6 modules)
+## How it works
 
-- **`sval.rs`** — the SValue ⇄ canonical-JSON bridge (contract §4): `Long`/`BigInt`
-  as decimal strings, lower-case hex, `SigmaProp` as the **bare** serialized
-  `SigmaBoolean` (not the ErgoTree-wrapped `prop_bytes()`), the `{tag}` SType form.
-- **`eval.rs`** — a deterministic `Context` (input bound at ContextExtension var 1)
-  + **lenient tree parse** via `ErgoTree::sigma_parse_bytes_lenient` (real header
-  honored — Rule-1012 semantics preserved; arbitrary-typed roots accepted, since
-  SANTA corpus roots are non-`SigmaProp`; native on eni / build-patched on develop —
-  see the lenient-parse entry note above) + eval via `try_eval_out`, capturing
-  the raw JIT cost from `ctx.jit_cost_value()`.
-- **`wire.rs`** — wire-tier round-trips: parse a kind's canonical bytes with the
-  sigma serializer and reserialize for byte-identity comparison. The `ErgoTree` kind
-  goes through the lenient parse (its vectors carry non-`SigmaProp` roots, which the
-  strict parse keeps as bytes instead of reading), so it re-encodes from structure.
-- **`nipopow.rs`** — the NiPoPoW tier: rebuild the vector's chain as `PoPowHeader`s
-  (interlinks and their proofs via `NipopowAlgos`), then answer an entry's interlinks
-  or `NipopowAlgos::prove` over it. `proofHex` ends with the proof's `continuous`
-  byte (0), which the node's wire encoding adds and sigma-rust's proof bytes omit.
-- **`transaction.rs`** — transaction-tier validation: decode a captured tx + its
-  input boxes from node-API JSON, build the minimal state context the JVM blesser
-  pinned (synthetic pre-header at the entry's height, blockVersion = activated+1,
-  launch-default parameters), and run ergo-lib's stateful validation
-  (`TransactionContext::validate` — the port of the node's `validateStateful`).
-  Accept ⇒ `valid: true` (+ the accumulated block-cost total on builds with
-  `jit-cost`; upstream has no tx-cost model ⇒ `cost: null`); any
-  `TxValidationError` ⇒ a clean `valid: false` + the impl's reason, mirroring the
-  JVM oracle's `validateStateful → Failure ⇒ invalid` mapping.
-- **`main.rs`** — the CLI + corpus driver. `run_entry` is **blind** (it never reads
-  `expected`); the comparison is a separate structural-equality step (contract §5–6).
+- **`eval.rs`**: evaluates an entry's tree in the canonical evaluation context the reference
+  builds for a bare evaluation (SELF holding the entry's tree, `INPUTS = [SELF]`, no outputs,
+  height 0, a fixed pre-header), with the entry's input bound where its envelope puts it. Trees
+  are read with `ErgoTree::sigma_parse_bytes_lenient`, since the vectors' roots are of any type,
+  and evaluated with `eval::test_util::try_eval_with_deserialize`, the public entry (behind the
+  `arbitrary` feature) that evaluates a root of any type. `Context` holds exactly ten headers
+  where the canonical context has none, so it carries ten copies of one fixed header.
+- **`wire.rs`**: parses a kind's bytes with sigma-rust's serializer and writes them back. The
+  `ErgoTree` kind goes through the lenient parse, so the tree is re-encoded from its structure.
+- **`transaction.rs`**: decodes the transaction and its boxes from their bytes, builds the
+  `ErgoStateContext` from the entry's own headers, pre-header and parameters, and runs ergo-lib's
+  stateful validation (`TransactionContext::validate`). A validation error is a clean
+  `valid: false` with sigma-rust's reason; bytes sigma-rust cannot read are `errored`.
+- **`nipopow.rs`**: rebuilds the chain as `PoPowHeader`s and answers interlinks or
+  `NipopowAlgos::prove`. The proof's bytes end with its `continuous` byte (0), which the node's
+  wire encoding adds and sigma-rust's proof serializer leaves out.
+- **`sval.rs`** and **`binding.rs`**: the bridge between SANTA's JSON values and sigma-rust's.
+  `Long` and `BigInt` are decimal strings, bytes lower-case hex, a `SigmaProp` its bare
+  `SigmaBoolean` bytes; an input given as `Value` bytes is read with sigma-rust's own reader for
+  that position.
+- **`main.rs`**: the CLI, and the dispatch by vector schema. Every entry gets exactly one outcome:
+  a value or verdict, `errored` (sigma-rust's own refusal, a divergence where the reference
+  accepted), `not-implemented`, or `panicked` (a panic, caught, or a failure of the runner itself,
+  with a note).
 
-## SANTA orchestrator integration
+## Until this runner lives in sigma-rust
 
-The orchestrator runs every runner through a uniform entrypoint, then applies one
-shared comparator over all runners' actuals — so "equal" is pinned identically across
-runners (runner-contract §6). Blitzen therefore only **emits** actuals on this path; it
-never self-judges.
-
-- **`santa-run <impl-path> <vectors-dir> <out-dir>`** — builds against the sigma-rust
-  SANTA checked out at `<impl-path>/sigma-rust` (wiring it to our `../sigma-rust`
-  path-dep), then runs `blitzen emit`. Exit 0 = actuals written; non-zero = the runner
-  itself failed.
-- **`runner.json`** — the runner manifest: this runner's identity (`name`/`label`),
-  its `impl` = `<url>#<ref>` (the sigma-rust to test), and the selection metadata the
-  orchestrator grades/filters on. Its exact field set is defined by the
-  [SANTA runner contract](https://github.com/mwaddip/santa/blob/HEAD/docs/contract/runner-contract.md)
-  — a living document; refer to it rather than duplicating the schema here.
-
-SANTA owns the `impl` checkout (clones `<url>` per-instance, checks out `<ref>`), so two
-runner dirs — e.g. `blitzen-develop` and `blitzen-eni` — pin different refs and compare
-the same implementation's branches side by side without colliding.
+Today it is a separate repository that SANTA checks out next to the sigma-rust under test:
+`Cargo.toml` depends on `../sigma-rust/<crate>`, and `santa-run` links `../sigma-rust` to the
+checkout SANTA passes as `<impl-path>`. Upstream sigma-rust has no lenient parse yet, so
+`santa-run` applies `patches/sigma-rust-lenient-parse-body.patch` to that checkout for the build
+and restores it on exit. Both go away when the runner moves into sigma-rust's `santa/` directory
+with the lenient parse as a real entry.

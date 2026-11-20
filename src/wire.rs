@@ -1,7 +1,7 @@
 //! Wire-tier round-trip: parse a `kind`'s canonical bytes with sigma-rust's serializer and
 //! reserialize for byte-identity comparison downstream. The wire analog of [`crate::eval::run_entry`]
 //! — a single round-trip outcome, no value/cost (docs/specs/wire-tier.md). A parse/serialize failure
-//! is `errored` (sigma-rust rejected bytes the JVM blessed — a real divergence); a `kind` with no
+//! is `errored` (sigma-rust rejected bytes the reference accepted — a real divergence); a `kind` with no
 //! sigma serializer wired here is `not-implemented`.
 
 use ergo_lib::chain::transaction::Transaction;
@@ -39,7 +39,7 @@ impl WireOutcome {
 }
 
 /// Round-trip `bytes` through `T`'s sigma serializer: parse then reserialize. A parse or serialize
-/// failure is `errored` — sigma-rust couldn't reproduce bytes the JVM blessed (a real divergence).
+/// failure is `errored` — sigma-rust couldn't reproduce bytes the reference accepted (a real divergence).
 fn roundtrip<T: SigmaSerializable>(bytes: &[u8]) -> WireOutcome {
     match T::sigma_parse_bytes(bytes) {
         Ok(obj) => match obj.sigma_serialize_bytes() {

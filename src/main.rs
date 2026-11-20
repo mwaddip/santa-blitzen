@@ -1,19 +1,20 @@
-//! Blitzen — the sigma-rust runner for the SANTA conformance suite
-//! (eval + wire + transaction tiers).
+//! Blitzen: sigma-rust's runner for SANTA, the Ergo consensus conformance suite
+//! (<https://github.com/mwaddip/santa>). It runs SANTA's test vectors through sigma-rust and
+//! writes down what sigma-rust answers; SANTA compares that with the reference implementation's
+//! answers. The vector and actuals formats are SANTA's runner contract
+//! (`docs/contract/runner-contract.md` for the eval tier, and its `-wire`, `-transaction` and
+//! `-nipopow` companions); "runner contract §N" below refers to it. An entry's `expected` is the
+//! reference's answer, recorded ("blessed") when the vector was made.
 //!
-//! Two modes — `eval::run_entry` produces actuals **blind** (never reads `expected`)
-//! in both:
-//!   blitzen <vector.json | dir>           self-compare: run each entry, compare vs
-//!                                          the blessed `expected`, print nice/coal.
-//!   blitzen emit <vectors-dir> <out-dir>  emit actuals for the SANTA orchestrator:
-//!                                          write <out-dir>/<same-filename> = an object
-//!                                          mapping entry name → { value, cost, error }.
-//!                                          No comparison — the orchestrator owns the
-//!                                          single §5 comparator across every runner.
+//! Two modes, both producing the actuals blind (never reading `expected`):
+//!   blitzen <vector.json | dir>           self-compare: run each entry, compare with its
+//!                                          `expected`, print nice/coal.
+//!   blitzen emit <vectors-dir> <out-dir>  write <out-dir>/<same-filename>: an object mapping
+//!                                          each entry's name to its actual. No comparison:
+//!                                          SANTA's orchestrator compares every runner alike.
 //!
-//! Self-compare's comparison is the separate step (contract §6), using serde_json
-//! structural equality — which matches the §5 match (objects key-order-insensitive,
-//! arrays order-sensitive, numbers numeric, strings exact, null==null).
+//! Self-compare uses serde_json's structural equality, which is the contract's match (§5):
+//! objects key-order-insensitive, arrays order-sensitive, numbers numeric, strings exact.
 
 mod binding;
 mod eval;
@@ -55,7 +56,7 @@ fn panic_note(p: Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "non-string panic payload".to_string())
 }
 
-/// Run one entry's eval under a panic net (never-panic, contract §3): an otherwise-uncaught
+/// Run one entry's eval under a panic net (never-panic, runner contract §3): an otherwise-uncaught
 /// panic becomes the `panicked` outcome (coal, message in `note`) so the run continues. The
 /// closure asserts unwind-safety at the call site (it only reads borrowed vector data).
 fn caught_actual<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
@@ -89,7 +90,7 @@ fn caught_actual_tx<F: FnOnce() -> J + std::panic::UnwindSafe>(f: F) -> J {
 /// Evaluate every entry of one vector file (blind), pairing each entry's `name`
 /// with its actual JSON and the vector's blessed `expected` JSON. Returns empty for
 /// a file carrying no `entries` (not an eval vector). A malformed vector aborts the
-/// run via `expect` — a loud error, never a silent skip (contract §3 totality).
+/// run via `expect` — a loud error, never a silent skip (runner contract §3: every entry gets an outcome).
 fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
     let text = std::fs::read_to_string(path).expect("read vector file");
     let vector: J = serde_json::from_str(&text).expect("parse vector JSON");
@@ -241,7 +242,7 @@ fn self_compare(path: &Path) {
 
 /// Emit mode: write one actuals file per vector (`<out-dir>/<same-filename>`), each an
 /// object mapping entry `name` → its `{ value, cost, error }` (santa-eval.actuals schema).
-/// Blind — never reads `expected`; the orchestrator owns the §5 comparison. Exit 0 once
+/// Blind — never reads `expected`; SANTA's orchestrator compares. Exit 0 once
 /// every actuals file is written; a malformed vector aborts loudly (non-zero) via `expect`.
 fn emit(vectors_dir: &Path, out_dir: &Path) {
     let files = collect_vector_files(vectors_dir);
@@ -390,7 +391,7 @@ mod tests {
         }
     }
 
-    /// santa-nipopow/v1 (`tests/fixtures/nipopow-chain-32.json`: SANTA's 32-header JVM chain, its interlinks entry and
+    /// santa-nipopow/v1 (`tests/fixtures/nipopow-chain-32.json`: SANTA's 32-header chain (from the reference node), its interlinks entry and
     /// one prove entry). This pins the arm's ENVELOPE, not develop's verdicts (the vectors do that): the interlinks
     /// entry answers one interlink vector per chain header, the prove entry a hex `proofHex` (or an honest
     /// errored / panicked), and neither is not-implemented.

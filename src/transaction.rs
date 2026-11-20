@@ -1,14 +1,14 @@
 //! Transaction-tier validation: decode one captured entry's tx + referenced boxes from
 //! canonical sigma BYTES (the consensus-unambiguous form — bytes preserve context-extension
-//! wire ORDER and u64 precision that node-API JSON silently corrupts; contract §2), build
-//! the REAL block context the vector carries (headers + preHeader + parameters; contract §5),
+//! wire ORDER and u64 precision that node-API JSON silently corrupts; runner-contract-transaction §2), build
+//! the REAL block context the vector carries (headers + preHeader + parameters; §5 there),
 //! and run ergo-lib's stateful validation — `TransactionContext::validate`, the sigma-rust
 //! port of the node's `validateStateful` (per-input script verify + ERG/token preservation +
 //! dust + height checks). The tx analog of [`crate::eval::run_entry`] / [`crate::wire::run_entry`].
 //!
 //! Outcome mapping (santa-transaction.actuals): a *verdict* is `valid: true` (with the
 //! accumulated cost when the impl yields one) or `valid: false` + the impl's reason —
-//! every `TxValidationError` is a clean reject, mirroring the JVM oracle's
+//! every `TxValidationError` is a clean reject, mirroring the reference node's
 //! `validateStateful → Failure ⇒ invalid` mapping (TxValidate.scala). A decode/setup
 //! failure (sigma-rust can't even read bytes the JVM accepted) is `errored` — no
 //! verdict was reached; that too is a real divergence on an accept vector.
@@ -34,7 +34,7 @@ pub enum TxOutcome {
     Verdict { valid: bool, reason: Option<String> },
     /// No verdict: the runner couldn't decode the entry or assemble the tx context.
     Errored { reason: String },
-    /// A would-be panic, caught by main's never-panic net (contract §3).
+    /// A would-be panic, caught by main's never-panic net (runner contract §3).
     Panicked { note: String },
 }
 
@@ -63,8 +63,8 @@ impl TxOutcome {
 }
 
 /// Decode a JSON array of hex-encoded `ErgoBox` bytes (`input_boxes_hex` /
-/// `data_input_boxes_hex`), in tx-input order. A hex/parse refusal of oracle-blessed
-/// bytes is a no-verdict (`errored`) — sigma-rust couldn't read what the JVM accepted.
+/// `data_input_boxes_hex`), in tx-input order. A hex/parse refusal of bytes the reference
+/// accepted is a no-verdict (`errored`) — sigma-rust couldn't read what the JVM accepted.
 fn decode_boxes_hex(v: &serde_json::Value, field: &str) -> Result<Vec<ErgoBox>, String> {
     let arr = v
         .as_array()
@@ -82,10 +82,10 @@ fn decode_boxes_hex(v: &serde_json::Value, field: &str) -> Result<Vec<ErgoBox>, 
     Ok(out)
 }
 
-/// Build the `ErgoStateContext` from the vector's REAL provided context (contract §5):
+/// Build the `ErgoStateContext` from the vector's REAL provided context (runner-contract-transaction §5):
 /// the last headers (`headers_hex`, NEWEST-first scorex bytes), the validating block's
 /// `preHeader`, and the on-chain `parameters` table. This replaces the earlier synthetic
-/// zeroed context — the blesser and every runner now validate under the SAME carried
+/// zeroed context — the reference and every runner now validate under the SAME carried
 /// context, so there is no per-impl reconstruction to coordinate.
 fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, String> {
     // Headers: newest-first; 1..=10 (a node near genesis supplies fewer).
@@ -174,9 +174,9 @@ fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, St
 }
 
 /// Validate one transaction entry. Produces exactly one [`TxOutcome`] (totality,
-/// contract §3). The tx + boxes decode from canonical sigma bytes (`tx_bytes_hex` /
+/// runner contract §3). The tx + boxes decode from canonical sigma bytes (`tx_bytes_hex` /
 /// `*_boxes_hex`); the state context is built from the entry's real `headers_hex` +
-/// `preHeader` + `parameters` (contract §5).
+/// `preHeader` + `parameters` (runner-contract-transaction §5).
 pub fn run_entry(entry: &serde_json::Value) -> TxOutcome {
     let tx_bytes = match entry["tx_bytes_hex"].as_str() {
         Some(h) => match hex_to_bytes(h) {
@@ -248,11 +248,11 @@ mod tests {
     /// `tests/fixtures/bigint-downcast-2666.json` (the on-disk `santa-transaction/v1` form) so
     /// the test is hermetic in the standalone runner repo (no SANTA vector tree needed).
     /// A real testnet tx whose input script needs the v3-gated BigInt→Long Downcast —
-    /// JVM-blessed {valid: true, cost: 14846}.
+    /// the reference answers {valid: true, cost: 14846}.
     const KEYSTONE_VECTOR: &str = include_str!("../tests/fixtures/bigint-downcast-2666.json");
 
     /// Shape test only: a verdict must be reached (`error: null`, `valid` a bool).
-    /// Whether `valid` is true (eni: carries the v6 fixes, matching the JVM bless) or
+    /// Whether `valid` is true (a sigma-rust with the v6 fixes, as the reference answers) or
     /// false (upstream develop: pre-fix `reduce_to_crypto` rejects the v3-gated
     /// Downcast) is per-branch — graded by conform against `expected`, not asserted
     /// here. The verdict is logged for eyeballing.
