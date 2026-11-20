@@ -88,7 +88,7 @@ fn decode_boxes_hex(v: &serde_json::Value, field: &str) -> Result<Vec<ErgoBox>, 
 /// zeroed context — the reference and every runner now validate under the SAME carried
 /// context, so there is no per-impl reconstruction to coordinate.
 fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, String> {
-    // Headers: newest-first; 1..=10 (a node near genesis supplies fewer).
+    // Headers: newest-first.
     let headers_arr = entry["headers_hex"]
         .as_array()
         .ok_or("headers_hex missing or not an array")?;
@@ -103,9 +103,11 @@ fn build_state_context(entry: &serde_json::Value) -> Result<ErgoStateContext, St
                 .map_err(|e| format!("headers_hex[{i}] decode: {e:?}"))?,
         );
     }
-    let headers: Headers = headers_vec
-        .try_into()
-        .map_err(|e| format!("headers out of bounds (need 1..=10): {e:?}"))?;
+    // `Headers` is `[Header; 10]` here, while a vector carries the headers a script sees (nine).
+    let n = headers_vec.len();
+    let headers: Headers = headers_vec.try_into().map_err(|_: Vec<Header>| {
+        format!("this sigma-rust's state context holds exactly 10 headers; the entry carries {n}")
+    })?;
 
     // PreHeader: the validating block's real pre-header (no synthetic `activated + 1` pin).
     let ph = &entry["preHeader"];
@@ -267,6 +269,25 @@ mod tests {
         if j["valid"] == J::Bool(false) {
             assert!(j["reason"].is_string(), "a reject must carry a reason: {j}");
         }
+    }
+
+    /// The vectors carry the nine headers a script sees, and this sigma-rust's state context holds exactly ten
+    /// (`Headers = [Header; 10]`): the entry is `errored`, and its reason says so in those terms.
+    #[test]
+    fn nine_headers_are_errored_with_the_count_in_the_reason() {
+        let vector: J = serde_json::from_str(KEYSTONE_VECTOR).expect("fixture JSON");
+        let mut entry = vector["entries"][0].clone();
+        entry["headers_hex"]
+            .as_array_mut()
+            .expect("headers_hex")
+            .truncate(9);
+        let j = run_entry(&entry).to_json();
+        assert_eq!(j["error"], "errored", "{j}");
+        let reason = j["reason"].as_str().expect("a reason");
+        assert!(
+            reason.contains("exactly 10") && reason.contains("carries 9"),
+            "{reason}"
+        );
     }
 
     /// A malformed entry (tx bytes not decodable) is `errored` — the runner failed to
