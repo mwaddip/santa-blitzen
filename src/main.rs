@@ -126,8 +126,13 @@ fn run_vector_file(path: &Path) -> Vec<(String, J, J)> {
         .map(|entry| {
             let name = entry["name"].as_str().unwrap_or("<unnamed>").to_string();
             let (actual, expected) = match tier {
-                Tier::FullContextEval | Tier::Unknown => (
+                Tier::FullContextEval => (
                     eval::Outcome::NotImplemented.to_json(),
+                    entry["expected"].clone(),
+                ),
+                // the tier-neutral form: the runner cannot know the actual shape of a schema it was not written for
+                Tier::Unknown => (
+                    serde_json::json!({"error": "not-implemented"}),
                     entry["expected"].clone(),
                 ),
                 Tier::NiPoPoW(chain) => (
@@ -417,10 +422,12 @@ mod tests {
             std::fs::write(&path, vector.to_string()).expect("write test vector");
             let results = run_vector_file(&path);
             assert_eq!(results.len(), 1, "{schema}");
+            // the tier-neutral form, admitted by every tier's actuals schema: the runner cannot know the actual
+            // shape of a schema it was not written for
             assert_eq!(
-                results[0].1["error"], "not-implemented",
-                "{schema}: {}",
-                results[0].1
+                results[0].1,
+                json!({"error": "not-implemented"}),
+                "{schema}"
             );
         }
     }
