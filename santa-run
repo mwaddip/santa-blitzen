@@ -41,4 +41,9 @@ restore   # heal a crashed previous run before applying afresh
 git -C "$impl/sigma-rust" apply "$here/patches/sigma-rust-lenient-parse-body.patch"
 trap restore EXIT
 cargo build --release --manifest-path "$here/Cargo.toml" >/dev/null
-"$here/target/release/blitzen" run "$here/runner.json" "$2" "$3"
+# the built binary does not read the patched source: restore the checkout now, before the run
+restore
+trap - EXIT
+# exec: the runner takes this script's pid, so a signal sent to santa-run reaches it (and it takes a bounded child's
+# group with it, runner-integration §3a); a runner left as bash's child would run on under pid 1 after bash died.
+exec "$here/target/release/blitzen" run "$here/runner.json" "$2" "$3"
