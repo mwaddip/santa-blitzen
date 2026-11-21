@@ -119,6 +119,7 @@ dependencies = [
  "ergo-nipopow",
  "ergotree-interpreter",
  "ergotree-ir",
+ "santa-harness",
  "serde",
  "serde_json",
  "sigma-ser",
@@ -1201,6 +1202,14 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys",
+]
+
+[[package]]
+name = "santa-harness"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
 ]
 
 [[package]]
