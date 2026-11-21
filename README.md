@@ -25,12 +25,16 @@ model, so the runner declares `cost: false` and SANTA grades values and verdicts
 ```bash
 cargo test                                            # the runner's own tests
 cargo run --release -- <vector.json | dir>            # run entries, compare with `expected`, print nice/coal
-cargo run --release -- emit <vectors-dir> <out-dir>   # write one actuals file per vector (no comparison)
+cargo run --release -- run runner.json <santa-dir> <out-dir>   # the self-contained runner
+SANTA_DIR=<santa-dir> cargo test --manifest-path harness/Cargo.toml   # the harness's own tests
 ```
 
-`santa-run <impl-path> <vectors-dir> <out-dir>` is the entry SANTA calls: it builds the runner and
-runs `emit` (its last line through `$SANTA_BOUND`, SANTA's resource bound). `runner.json` declares
-what this runner covers (`version`, `tiers`, `cost`), read by SANTA from this checkout.
+`santa-run <impl-path> <santa-dir> <out-dir>` is the entry SANTA calls: it builds the runner and runs
+`blitzen run`, which, through the harness (`harness/`), checks its grading interpreter and selection
+against the SANTA checkout's oracles, selects the vector files `runner.json`'s scope covers (`version`,
+`tiers`, `cost`), runs them (each bounded file in a child process under its budget), grades every
+answer by SANTA's `vectors/grading.json`, and writes `results.json` and `actuals/` (SANTA's
+runner-integration §3, §4). SANTA re-grades the actuals as a canary.
 
 ## How it works
 

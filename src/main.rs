@@ -1,17 +1,18 @@
 //! Blitzen: sigma-rust's runner for SANTA, the Ergo consensus conformance suite
-//! (<https://github.com/mwaddip/santa>). It runs SANTA's test vectors through sigma-rust and
-//! writes down what sigma-rust answers; SANTA compares that with the reference implementation's
-//! answers. The vector and actuals formats are SANTA's runner contract
+//! (<https://github.com/mwaddip/santa>). It runs SANTA's test vectors through sigma-rust, grades
+//! sigma-rust's answers against the reference implementation's (the harness, `harness/`), and
+//! writes its results; SANTA re-grades them as a canary. The vector and actuals formats are SANTA's runner contract
 //! (`docs/contract/runner-contract.md` for the eval tier, and its `-wire`, `-transaction` and
 //! `-nipopow` companions); "runner contract §N" below refers to it. An entry's `expected` is the
 //! reference's answer, recorded ("blessed") when the vector was made.
 //!
-//! Two modes, both producing the actuals blind (never reading `expected`):
+//! The modes, all producing the actuals blind (never reading `expected`):
+//!   blitzen run <runner.json> <santa-dir> <out-dir>  the self-contained runner (SANTA's
+//!                                          runner-integration §3): select, run, bound, grade,
+//!                                          write results.json and actuals/ (the harness).
+//!   blitzen one <santa-dir> <relpath> <out-file>     a bounded file's child: run that one file.
 //!   blitzen <vector.json | dir>           self-compare: run each entry, compare with its
 //!                                          `expected`, print nice/coal.
-//!   blitzen emit <vectors-dir> <out-dir>  write <out-dir>/<same-filename>: an object mapping
-//!                                          each entry's name to its actual. No comparison:
-//!                                          SANTA's orchestrator compares every runner alike.
 //!
 //! Self-compare uses serde_json's structural equality, which is the contract's match (§5):
 //! objects key-order-insensitive, arrays order-sensitive, numbers numeric, strings exact.
@@ -24,24 +25,36 @@ mod transaction;
 mod wire;
 
 use serde_json::Value as J;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// The harness's runner function: one vector file → its actuals by entry name.
+fn run_file(path: &Path, _doc: &J) -> BTreeMap<String, J> {
+    run_vector_file(path).into_iter().map(|(name, actual, _expected)| (name, actual)).collect()
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str) {
-        Some("emit") => {
-            if args.len() < 4 {
-                eprintln!("usage: blitzen emit <vectors-dir> <out-dir>");
-                std::process::exit(2);
-            }
-            emit(Path::new(&args[2]), Path::new(&args[3]));
+    let done = |r: Result<(), String>| {
+        if let Err(e) = r {
+            eprintln!("blitzen: {e}");
+            std::process::exit(1);
         }
-        Some(target) => self_compare(Path::new(target)),
-        None => {
+    };
+    match args.get(1).map(String::as_str) {
+        Some("run") if args.len() == 5 => {
+            done(santa_harness::main_run(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), &run_file))
+        }
+        Some("one") if args.len() == 5 => {
+            done(santa_harness::main_one(Path::new(&args[2]), &args[3], Path::new(&args[4]), &run_file))
+        }
+        Some(target) if target != "run" && target != "one" => self_compare(Path::new(target)),
+        _ => {
             eprintln!(
                 "usage:\n  \
-                 blitzen <vector.json | dir>           self-compare vs blessed expected\n  \
-                 blitzen emit <vectors-dir> <out-dir>  emit actuals for the SANTA orchestrator"
+                 blitzen run <runner.json> <santa-dir> <out-dir>  the self-contained runner\n  \
+                 blitzen one <santa-dir> <relpath> <out-file>     a bounded file's child\n  \
+                 blitzen <vector.json | dir>                      self-compare vs blessed expected"
             );
             std::process::exit(2);
         }
@@ -252,41 +265,6 @@ fn self_compare(path: &Path) {
     if coal_list.len() > 60 {
         println!("\n... and {} more coal entries", coal_list.len() - 60);
     }
-}
-
-/// Emit mode: write one actuals file per vector (`<out-dir>/<same-filename>`), each an
-/// object mapping entry `name` → its `{ value, cost, error }` (santa-eval.actuals schema).
-/// Blind — never reads `expected`; SANTA's orchestrator compares. Exit 0 once
-/// every actuals file is written; a malformed vector aborts loudly (non-zero) via `expect`.
-fn emit(vectors_dir: &Path, out_dir: &Path) {
-    let files = collect_vector_files(vectors_dir);
-    if files.is_empty() {
-        eprintln!("no .json vector files found at {}", vectors_dir.display());
-        std::process::exit(2);
-    }
-    std::fs::create_dir_all(out_dir).expect("create out dir");
-
-    let mut written = 0u64;
-    for f in &files {
-        let entries = run_vector_file(f);
-        if entries.is_empty() {
-            continue; // not an eval vector → no actuals file
-        }
-        let mut actuals = serde_json::Map::new();
-        for (name, actual, _expected) in entries {
-            actuals.insert(name, actual);
-        }
-        let filename = f.file_name().expect("vector filename");
-        let out_path = out_dir.join(filename);
-        let text = serde_json::to_string_pretty(&J::Object(actuals)).expect("serialize actuals");
-        std::fs::write(&out_path, text).expect("write actuals file");
-        written += 1;
-    }
-    eprintln!(
-        "blitzen emit: wrote {} actuals files to {}",
-        written,
-        out_dir.display()
-    );
 }
 
 fn short_name(path: &Path) -> String {

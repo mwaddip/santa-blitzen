@@ -24,4 +24,7 @@ sigma-ser = { path = "../sigma-rust/sigma-ser" }
 ergo-nipopow = { path = "../sigma-rust/ergo-nipopow" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# SANTA's self-contained-runner harness: selection, the grading interpreter, the oracle checks, the bounded-file
+# watchdog, results.json. A crate in this repo (a copy also lives in SANTA's other Rust runners); see harness/.
+santa-harness = { path = "harness" }
 
