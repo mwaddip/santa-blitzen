@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+pub mod bounds;
 pub mod equal;
 pub mod grading;
 pub mod oracle;
