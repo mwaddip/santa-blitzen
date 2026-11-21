@@ -2,8 +2,8 @@
 
 sigma-rust's runner for [SANTA](https://github.com/mwaddip/santa), the Ergo consensus conformance
 suite. SANTA holds test vectors whose expected answers were recorded ("blessed") from the
-reference implementation (sigma-state and the JVM node); Blitzen runs them through sigma-rust and
-writes down what sigma-rust answers, and SANTA compares the two. Where sigma-rust answers
+reference implementation (sigma-state and the JVM node); Blitzen runs them through sigma-rust,
+grades sigma-rust's answers against the blessed ones, and writes its results; SANTA re-grades them. Where sigma-rust answers
 differently, that is a divergence to look at, not something this runner smooths over.
 
 It covers four tiers:
@@ -60,8 +60,8 @@ runner-integration §3, §4). SANTA re-grades the actuals as a canary.
   that position.
 - **`main.rs`**: the CLI, and the dispatch by vector schema. Every entry gets exactly one outcome:
   a value or verdict, `errored` (sigma-rust's own refusal, a divergence where the reference
-  accepted), `not-implemented`, or `panicked` (a panic, caught, or a failure of the runner itself,
-  with a note).
+  accepted), `not-implemented`, `panicked` (a panic, caught, or a failure of the runner itself,
+  with a note), or, for a bounded file, `exceeded` (its child went over its memory or time budget).
 
 ## Until this runner lives in sigma-rust
 
